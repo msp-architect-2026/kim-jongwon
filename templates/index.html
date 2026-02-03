@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>K8s Backtest Platform</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+          rel="stylesheet"
+          integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YcnS/1tMfUBxMK5eAw4vFYwL7ewm3PEty0W0"
+          crossorigin="anonymous">
+    <style>
+        body { background: #0d1117; color: #c9d1d9; }
+        .navbar { background: #161b22 !important; border-bottom: 1px solid #30363d; }
+        .card { background: #161b22; border: 1px solid #30363d; }
+        .metric-value { font-size: 1.6rem; font-weight: 700; }
+        .metric-label { font-size: 0.78rem; text-transform: uppercase; color: #8b949e; letter-spacing: 0.05em; }
+        .text-profit { color: #3fb950; }
+        .text-loss { color: #f85149; }
+        .text-neutral { color: #8b949e; }
+        .chart-container img { width: 100%; border-radius: 8px; }
+        .btn-run { background: #238636; border: none; font-weight: 600; }
+        .btn-run:hover { background: #2ea043; }
+        .btn-run:disabled { background: #1a5d2b; opacity: 0.7; }
+        .spinner-border { width: 1rem; height: 1rem; border-width: 0.15em; }
+        #results-section { display: none; }
+    </style>
+</head>
+<body>
+
+<!-- Navbar -->
+<nav class="navbar navbar-dark sticky-top px-4 py-2">
+    <span class="navbar-brand mb-0 h5">K8s Backtest Platform</span>
+    <span class="text-secondary small">Day 3 — Web Dashboard</span>
+</nav>
+
+<div class="container-fluid px-4 py-4">
+
+    <!-- Alert area -->
+    <div id="alert-area"></div>
+
+    <!-- Control Panel -->
+    <div class="card mb-4">
+        <div class="card-body">
+            <div class="row g-3 align-items-end">
+                <div class="col-md-3">
+                    <label for="ticker-select" class="form-label">Ticker</label>
+                    <select id="ticker-select" class="form-select">
+                        {% for t in tickers %}
+                        <option value="{{ t }}">{{ t.replace('.csv', '') }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <label for="strategy-select" class="form-label">Strategy</label>
+                    <select id="strategy-select" class="form-select">
+                        {% for key, name in strategies.items() %}
+                        <option value="{{ key }}">{{ name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-md-3" id="params-panel">
+                    <!-- Dynamic params injected by JS -->
+                </div>
+                <div class="col-md-3">
+                    <button id="btn-run" class="btn btn-run w-100 py-2" onclick="runBacktest()">
+                        Run Backtest
+                    </button>
+                </div>
+            </div>
+            <div class="row g-3 mt-1">
+                <div class="col-md-3">
+                    <label for="start-date" class="form-label small">Start Date</label>
+                    <input type="date" id="start-date" class="form-control form-control-sm" value="2020-01-01">
+                </div>
+                <div class="col-md-3">
+                    <label for="end-date" class="form-label small">End Date</label>
+                    <input type="date" id="end-date" class="form-control form-control-sm" value="2024-12-31">
+                </div>
+            </div>
+            <div class="row g-3 mt-1 align-items-end">
+                <div class="col-md-4">
+                    <label for="preset-select" class="form-label small">Saved Presets</label>
+                    <select id="preset-select" class="form-select form-select-sm">
+                        <option value="">-- Select Preset --</option>
+                    </select>
+                </div>
+                <div class="col-md-2">
+                    <button class="btn btn-outline-info btn-sm w-100" onclick="savePreset()">Save Preset</button>
+                </div>
+                <div class="col-md-2">
+                    <button class="btn btn-outline-danger btn-sm w-100" onclick="deletePreset()">Delete Preset</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Results Section -->
+    <div id="results-section">
+
+        <!-- Run ID -->
+        <div class="mb-3">
+            <span class="text-secondary small">run_id: </span>
+            <code id="run-id" class="text-info"></code>
+        </div>
+
+        <!-- Metric Cards -->
+        <div class="row g-3 mb-4">
+            <div class="col-6 col-lg-3">
+                <div class="card text-center p-3">
+                    <div class="metric-label">Total Return</div>
+                    <div class="metric-value" id="m-return">—</div>
+                </div>
+            </div>
+            <div class="col-6 col-lg-3">
+                <div class="card text-center p-3">
+                    <div class="metric-label">Final Value</div>
+                    <div class="metric-value text-neutral" id="m-final">—</div>
+                </div>
+            </div>
+            <div class="col-6 col-lg-3">
+                <div class="card text-center p-3">
+                    <div class="metric-label">Sharpe Ratio</div>
+                    <div class="metric-value text-neutral" id="m-sharpe">—</div>
+                </div>
+            </div>
+            <div class="col-6 col-lg-3">
+                <div class="card text-center p-3">
+                    <div class="metric-label">Max Drawdown</div>
+                    <div class="metric-value text-loss" id="m-mdd">—</div>
+                </div>
+            </div>
+            <div class="col-6 col-lg-3">
+                <div class="card text-center p-3">
+                    <div class="metric-label">Win Rate</div>
+                    <div class="metric-value text-neutral" id="m-winrate">—</div>
+                </div>
+            </div>
+            <div class="col-6 col-lg-3">
+                <div class="card text-center p-3">
+                    <div class="metric-label">Trades</div>
+                    <div class="metric-value text-neutral" id="m-trades">—</div>
+                </div>
+            </div>
+            <div class="col-6 col-lg-3">
+                <div class="card text-center p-3">
+                    <div class="metric-label">Sortino Ratio</div>
+                    <div class="metric-value text-neutral" id="m-sortino">—</div>
+                </div>
+            </div>
+            <div class="col-6 col-lg-3">
+                <div class="card text-center p-3">
+                    <div class="metric-label">Profit Factor</div>
+                    <div class="metric-value text-neutral" id="m-pf">—</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Chart -->
+        <div class="card">
+            <div class="card-body chart-container p-2">
+                <img id="chart-img" src="" alt="Portfolio Chart">
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+const paramsConfig = {
+    RSI:  [
+        {id: "period",    label: "RSI Period",  value: 14},
+        {id: "oversold",  label: "Oversold",    value: 30},
+        {id: "overbought",label: "Overbought",  value: 70}
+    ],
+    MACD: [
+        {id: "fast",   label: "Fast",   value: 12},
+        {id: "slow",   label: "Slow",   value: 26},
+        {id: "signal", label: "Signal", value: 9}
+    ],
+    RSI_MACD: [
+        {id: "rsi_period",  label: "RSI Period",  value: 14},
+        {id: "oversold",    label: "Oversold",    value: 30},
+        {id: "overbought",  label: "Overbought",  value: 70},
+        {id: "fast",        label: "MACD Fast",   value: 12},
+        {id: "slow",        label: "MACD Slow",   value: 26},
+        {id: "signal",      label: "MACD Signal", value: 9}
+    ]
+};
+
+function renderParams() {
+    const strategy = document.getElementById("strategy-select").value;
+    const panel = document.getElementById("params-panel");
+    const cfg = paramsConfig[strategy] || [];
+    panel.innerHTML = cfg.map(p =>
+        `<div class="d-inline-block me-2 mb-1">
+            <label class="form-label small mb-0">${p.label}</label>
+            <input type="number" class="form-control form-control-sm param-input"
+                   id="param-${p.id}" value="${p.value}" style="width:80px">
+        </div>`
+    ).join("");
+}
+
+document.getElementById("strategy-select").addEventListener("change", renderParams);
+renderParams();
+
+function showAlert(msg, type) {
+    const area = document.getElementById("alert-area");
+    area.innerHTML = `<div class="alert alert-${type} alert-dismissible fade show" role="alert">
+        ${msg}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>`;
+}
+
+function fmt(v, decimals) {
+    if (v === null || v === undefined || isNaN(v)) return "N/A";
+    return Number(v).toFixed(decimals);
+}
+
+function colorClass(v) {
+    if (v > 0) return "text-profit";
+    if (v < 0) return "text-loss";
+    return "text-neutral";
+}
+
+async function runBacktest() {
+    const btn = document.getElementById("btn-run");
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border me-1"></span>Running...';
+    document.getElementById("alert-area").innerHTML = "";
+
+    const strategy = document.getElementById("strategy-select").value;
+    const params = {};
+    document.querySelectorAll(".param-input").forEach(el => {
+        params[el.id.replace("param-", "")] = el.value;
+    });
+
+    const startDate = document.getElementById("start-date").value;
+    const endDate = document.getElementById("end-date").value;
+
+    const body = {
+        ticker: document.getElementById("ticker-select").value,
+        strategy: strategy,
+        params: params,
+        start_date: startDate || null,
+        end_date: endDate || null
+    };
+
+    try {
+        const res = await fetch("/run_backtest", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify(body)
+        });
+        const json = await res.json();
+
+        if (json.status === "error") {
+            showAlert(json.message, "danger");
+            document.getElementById("results-section").style.display = "none";
+        } else {
+            const m = json.metrics;
+            document.getElementById("run-id").textContent = json.run_id;
+
+            const retEl = document.getElementById("m-return");
+            retEl.textContent = fmt(m.total_return_pct, 2) + "%";
+            retEl.className = "metric-value " + colorClass(m.total_return_pct);
+
+            document.getElementById("m-final").textContent = "$" + Number(m.final_value).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
+            document.getElementById("m-sharpe").textContent = fmt(m.sharpe_ratio, 2);
+            document.getElementById("m-mdd").textContent = fmt(m.max_drawdown_pct, 2) + "%";
+            document.getElementById("m-winrate").textContent = fmt(m.win_rate, 1) + "%";
+            document.getElementById("m-trades").textContent = m.num_trades;
+            document.getElementById("m-sortino").textContent = fmt(m.sortino_ratio, 2);
+            document.getElementById("m-pf").textContent = fmt(m.profit_factor, 2);
+
+            document.getElementById("chart-img").src = json.chart_image;
+            document.getElementById("results-section").style.display = "block";
+        }
+    } catch (err) {
+        showAlert("Network error: " + err.message, "danger");
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = "Run Backtest";
+    }
+}
+
+// ━━━ Strategy Preset Functions ━━━
+let presetCache = [];
+
+async function loadPresets() {
+    try {
+        const res = await fetch("/api/strategies");
+        presetCache = await res.json();
+        const sel = document.getElementById("preset-select");
+        sel.innerHTML = '<option value="">-- Select Preset --</option>';
+        presetCache.forEach(s => {
+            const opt = document.createElement("option");
+            opt.value = s.id;
+            opt.textContent = `${s.name} (${s.type})`;
+            sel.appendChild(opt);
+        });
+    } catch (err) {
+        console.error("Failed to load presets:", err);
+    }
+}
+
+document.getElementById("preset-select").addEventListener("change", function() {
+    const id = parseInt(this.value);
+    if (!id) return;
+    const preset = presetCache.find(s => s.id === id);
+    if (!preset) return;
+
+    // Set strategy dropdown
+    const stratSel = document.getElementById("strategy-select");
+    stratSel.value = preset.type;
+    renderParams();
+
+    // Fill param inputs
+    setTimeout(() => {
+        Object.entries(preset.params).forEach(([key, val]) => {
+            const el = document.getElementById("param-" + key);
+            if (el) el.value = val;
+        });
+    }, 50);
+});
+
+async function savePreset() {
+    const name = prompt("Enter a name for this preset:");
+    if (!name || !name.trim()) return;
+
+    const strategy = document.getElementById("strategy-select").value;
+    const params = {};
+    document.querySelectorAll(".param-input").forEach(el => {
+        params[el.id.replace("param-", "")] = Number(el.value);
+    });
+
+    try {
+        const res = await fetch("/api/strategies", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({name: name.trim(), type: strategy, params: params})
+        });
+        const json = await res.json();
+        if (res.ok) {
+            showAlert("Preset saved: " + name.trim(), "success");
+            await loadPresets();
+        } else {
+            showAlert(json.message || "Failed to save preset", "danger");
+        }
+    } catch (err) {
+        showAlert("Network error: " + err.message, "danger");
+    }
+}
+
+async function deletePreset() {
+    const sel = document.getElementById("preset-select");
+    const id = sel.value;
+    if (!id) {
+        showAlert("Select a preset to delete", "warning");
+        return;
+    }
+    const name = sel.options[sel.selectedIndex].textContent;
+    if (!confirm("Delete preset: " + name + "?")) return;
+
+    try {
+        const res = await fetch("/api/strategies/" + id, {method: "DELETE"});
+        const json = await res.json();
+        if (res.ok) {
+            showAlert("Preset deleted", "success");
+            await loadPresets();
+        } else {
+            showAlert(json.message || "Failed to delete preset", "danger");
+        }
+    } catch (err) {
+        showAlert("Network error: " + err.message, "danger");
+    }
+}
+
+// Load presets on page load
+loadPresets();
+</script>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
+        integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz"
+        crossorigin="anonymous"></script>
+</body>
+</html>

@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+.venv/
+*.egg
+
+# Environment variables
+.env
+
+# Flask instance folder (contains strategies.db)
+instance/
+
+# SQLite databases (must NEVER be committed)
+*.db
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Claude Code
+.claude/
+
+# Data files — ignore all CSVs except AAPL.csv (demo)
+data/*.csv
+!data/AAPL.csv
+
+# Logs
+logs/
+*.log
