@@ -5,7 +5,9 @@
 | 항목 | 내용 |
 |---|---|
 | **Project Name** | Kubernetes-based Stock Backtesting Platform |
-| **Purpose** | 검증 완료된 Python 백테스트 엔진을 Docker 컨테이너로 감싸고, Kubernetes Job으로 실행하는 클라우드 네이티브 플랫폼 |
+| **Timeline** | 16일 (2026-02-04 ~ 2026-02-19) |
+| **Purpose** | 강의 과제 + 클라우드 엔지니어링 면접 포트폴리오 |
+| **Core Goal** | 검증 완료된 Python 백테스트 엔진을 Docker 컨테이너로 감싸고, Kubernetes Job으로 실행하는 클라우드 네이티브 플랫폼 |
 
 **Core Values:**
 
@@ -18,13 +20,41 @@
 
 ---
 
-## 2. Tech Stack
+## 2. Project Status
+
+**Current Phase:** Day 3.9 (2026-02-06) — UI Polishing & Pre-Docker
+
+| Phase | Status | Scope |
+|---|---|---|
+| Day 1-2 | **✅ Completed** | Core engine verification, rules library, technical indicators, MVP pipeline |
+| Day 3 | **✅ Completed** | Flask app structure (MVC), immutable engine integration, strategy persistence (SQLite + SQLAlchemy), core web routes & API contracts (`/run_backtest`, `/api/strategies`, `/health`) |
+| Day 3.9 | **🔄 In Progress** | Frontend UI refinement: Fintech-style Bootstrap dark mode, improved chart visualization, responsive KPI cards, loading spinners & error alerts |
+| Day 4 | **📋 Planned** | Dockerization (`Dockerfile`, `docker-compose.yml`, `.env.example`, health check) |
+| Day 5 | **📋 Planned** | Kubernetes + MySQL (StatefulSet, Deployment, ConfigMap, Secret) |
+| Day 6 | **📋 Planned** | Web → K8s Job integration (worker entrypoint, job launcher, status polling) |
+
+**Implemented APIs:**
+
+| Method | Path | Status |
+|---|---|---|
+| `GET` | `/` | ✅ Implemented |
+| `POST` | `/run_backtest` | ✅ Implemented |
+| `GET` | `/api/strategies` | ✅ Implemented |
+| `POST` | `/api/strategies` | ✅ Implemented |
+| `DELETE` | `/api/strategies/<id>` | ✅ Implemented |
+| `GET` | `/health` | ✅ Implemented |
+
+---
+
+## 3. Tech Stack
 
 | Layer | Choice | Notes |
 |---|---|---|
 | Runtime | Python 3.11 Slim | `python:3.11-slim` Docker base image |
 | Package Mgmt | pip + requirements.txt | Poetry/Pipenv 사용 금지 |
 | Web Framework | Flask (sync) | Gunicorn 워커; 비동기 불필요 |
+| **Frontend** | **Jinja2 + Bootstrap 5** | **Template rendering only. NO React/Vue/SPA frameworks** |
+| ORM | Flask-SQLAlchemy | SQLite (local dev) → MySQL (production) |
 | Data Processing | Pandas, NumPy | 기존 사용 중 |
 | Visualization | Matplotlib (**Agg** backend) | 서버 환경 필수; GUI 의존성 없음 |
 | Containerization | Docker | Multi-stage build |
@@ -33,14 +63,48 @@
 
 ---
 
-## 3. Strict Rules (Non-Negotiable)
+## 4. Strict Rules (Non-Negotiable)
+
+### Terminology (IMPORTANT)
+
+To avoid ambiguity in design and implementation, the following terms are used consistently:
+
+- **Rule**:  
+  A trading logic implementation defined in `rules/`  
+  (e.g., `RsiRule`, `MacdRule`, `RsiMacdRule`).  
+  Rules define **how trades are generated** and are part of the immutable core logic.
+
+- **Strategy Preset**:  
+  A user-defined UI configuration persisted via SQLAlchemy  
+  (stored in the `Strategy` ORM model).  
+  Presets store **parameters only** (dates, rule type, UI settings) and  
+  **do NOT define trading logic**.
+
+Rule logic MUST live in `rules/`.  
+Strategy Presets MUST NOT introduce or modify trading behavior.
+
+
+**Quick Reference:**
+
+| Rule | 핵심 내용 | 위반 시 결과 |
+|---|---|---|
+| **#1** | Engine 수정 금지 | 엔진 크래시, 재현성 파괴 |
+| **#2** | API Contract 동결 | Worker-Web 통신 장애 |
+| **#3** | 루트에서만 실행 | `ModuleNotFoundError` |
+| **#4** | Stateless 아키텍처 | K8s 배포 실패 |
+| **#5** | Matplotlib Agg | 서버 환경 렌더링 실패 |
+| **#6** | 에러 핸들링 | 400 vs 500 구분 필수 |
+| **#7** | 환경변수 설정 | 시크릿 노출 위험 |
+| **#8** | run_id 로깅 | 디버깅 불가 |
+| **#9** | DB Session Safety | 트랜잭션 손상 |
+
+---
 
 ### Rule 1 -- Engine Immutability & Scope Discipline
 
 `backtest/engine.py`와 모든 핵심 백테스트 로직은 레거시 코드이며 **절대 수정 금지**.
 엔진 출력이 UI에 부족하면 **README에 제한사항 문서화**. 엔진 수정 금지.
 새로운 기능은 반드시 wrapper/adapter 패턴으로 해결.
-
 ```python
 # CORRECT: 래퍼 패턴
 class EnhancedEngine:
@@ -55,9 +119,10 @@ class EnhancedEngine:
 
 ### Rule 2 -- Immutable API Contracts
 
+**This is the target Web↔Worker contract, enforced starting Day 5.**
+
 Web(Controller)과 Worker(Job) 간 JSON Schema는 **한번 정의되면 동결**.
 기존 필드 삭제/이름 변경 금지. 새 필드 추가 시 기본값 필수.
-
 ```json
 // Backtest Request (Web -> Worker)
 {
@@ -87,7 +152,6 @@ Web(Controller)과 Worker(Job) 간 JSON Schema는 **한번 정의되면 동결**
 
 모든 명령(Docker build, Python 실행, 테스트)은 **프로젝트 루트에서 실행**.
 하위 폴더로 `cd`하여 스크립트를 실행하면 `ModuleNotFoundError` 발생.
-
 ```bash
 # Correct
 python scripts/verify_mvp.py
@@ -102,8 +166,12 @@ cd scripts && python verify_mvp.py
 
 Flask 서버는 로컬 파일시스템에 쓰기 금지.
 생성된 아티팩트(차트, 이미지)는 메모리에서 처리하고 Base64로 반환.
-백테스트 결과는 MySQL에 저장, 로컬 파일 저장 금지.
 
+**Backtest results storage:**
+- **Day 3-4 (Current):** Results returned inline as Base64-encoded JSON response
+- **Day 5+ (Future):** Results persisted to MySQL; Base64 chart stored in `backtest_results` table
+
+Strategy definitions (user-created rules) are stored in SQLite via SQLAlchemy.
 ```python
 # Correct
 buf = io.BytesIO()
@@ -114,11 +182,19 @@ chart_b64 = base64.b64encode(buf.getvalue()).decode()
 fig.savefig("/tmp/chart.png")
 ```
 
+**Note on Local SQLite Usage (IMPORTANT):**
+
+- SQLite is used **ONLY for local development (Day 3–4)** to persist UI strategy presets.
+- The SQLite file (`strategies.db`) is **NOT a production dependency** and is **never committed**.
+- Starting Day 5, all persistent state (presets & results) moves to **MySQL via StatefulSet**.
+- The Web tier remains stateless in production; local SQLite is a **development-only exception**.
+
+
+
 ### Rule 5 -- Server-Safe Visualization
 
 - pyplot import 전에 반드시 `matplotlib.use("Agg")` 설정
 - 렌더링 후 반드시 `plt.close(fig)`로 figure 해제 (메모리 누수 방지)
-
 ```python
 import matplotlib
 matplotlib.use("Agg")
@@ -136,7 +212,6 @@ plt.close(fig)  # REQUIRED
 - User/Input 에러: **HTTP 400** (누락 필드, 잘못된 날짜, 알 수 없는 rule_id)
 - System/Execution 에러: **HTTP 500** (DB 다운, 엔진 크래시)
 - 사용자 메시지는 간결하게, 상세 스택 트레이스는 **서버 로그에만** 기록
-
 ```python
 @app.errorhandler(Exception)
 def handle_error(e):
@@ -150,7 +225,6 @@ def handle_error(e):
 - 로컬: `.env.example` 커밋 (실제 `.env`는 `.gitignore`)
 - K8s: ConfigMap(비밀 아닌 값) + Secret(DB 비밀번호 등)
 - **하드코딩된 시크릿 커밋 절대 금지**
-
 ```bash
 # .env.example (committed)
 FLASK_ENV=development
@@ -167,7 +241,6 @@ LOG_LEVEL=INFO
 - 모든 백테스트 실행에 `run_id` (UUID4) 부여
 - 모든 로그에 `run_id` 포함
 - K8s 로그 수집을 위해 Stdout/Stderr로만 로깅
-
 ```python
 import uuid
 run_id = str(uuid.uuid4())
@@ -175,23 +248,37 @@ logger.info(f"[run_id={run_id}] Backtest started: ticker={ticker}, rule={rule_id
 logger.info(f"[run_id={run_id}] Backtest completed: return={result['total_return_pct']:.2f}%")
 ```
 
+### Rule 9 -- Database Session Safety
+
+- 모든 `db.session.commit()`은 `try/except` 안에서 호출
+- Exception 발생 시 반드시 `db.session.rollback()` 실행
+- `IntegrityError`(중복)와 일반 `Exception`(시스템 장애) 분리 처리
+- `db.create_all()`은 `if __name__ == "__main__"` 블록 안에서만 호출 (Gunicorn/K8s 호환)
+
+
+**Git Safety Rule:**
+- `strategies.db` (SQLite file) MUST be listed in `.gitignore` and never committed.
+
+
 ---
 
-## 4. Directory Structure
-
-`[PLANNED]` 표시 항목은 아직 존재하지 않으며, 로드맵에 따라 생성 예정.
-
+## 5. Directory Structure
 ```
 stock_backtest/
 |
 |-- CLAUDE.md                          # 이 파일 (프로젝트 규칙 및 컨텍스트)
+|-- README.md                          # 프로젝트 소개 및 Quick Start
+|-- RETROSPECTIVE.md                   # 기술 회고 및 아키텍처 설명
 |-- requirements.txt                   # Python 의존성
+|-- .gitignore                         # Git 제외 규칙
 |-- test_structure.py                  # 구조 검증 테스트
-|-- app.py                             # [PLANNED] Flask 애플리케이션 진입점
-|-- Dockerfile                         # [PLANNED] Multi-stage Docker 빌드
-|-- docker-compose.yml                 # [PLANNED] 로컬 개발: app + MySQL
-|-- .env.example                       # [PLANNED] 환경변수 템플릿
-|-- .dockerignore                      # [PLANNED] data/, logs/, __pycache__/ 제외
+|-- app.py                             # ✅ Flask 애플리케이션 진입점 (Controller)
+|-- extensions.py                      # ✅ SQLAlchemy 인스턴스 (순환 import 방지)
+|-- models.py                          # ✅ Strategy ORM 모델
+|-- Dockerfile                         # [Day 4] Multi-stage Docker 빌드
+|-- docker-compose.yml                 # [Day 4] 로컬 개발: app + MySQL
+|-- .env.example                       # [Day 4] 환경변수 템플릿
+|-- .dockerignore                      # [Day 4] data/, logs/, __pycache__/ 제외
 |
 |-- backtest/                          # 핵심 엔진 (IMMUTABLE)
 |   |-- __init__.py
@@ -201,7 +288,7 @@ stock_backtest/
 |-- rules/                             # 트레이딩 룰 라이브러리
 |   |-- __init__.py
 |   |-- base_rule.py                   # BaseRule, Signal, RuleMetadata, CompositeRule
-|   |-- technical_rules.py             # MA Cross, RSI, BB, MACD, Volume, Trend, ATR
+|   |-- technical_rules.py             # ✅ Implemented: RSI, MACD, RSI+MACD, MA Cross, BB, Volume, Trend, ATR
 |   |-- paper_rules.py                 # Momentum, Value, MeanReversion, Breakout
 |   |-- rule_validator.py              # RuleValidator, SignalAnalyzer
 |   +-- optimizer.py                   # ParameterOptimizer (Grid Search)
@@ -218,15 +305,10 @@ stock_backtest/
 |   |-- qa_prices.py                   # 데이터 품질 검증
 |   +-- verify_mvp.py                  # E2E 파이프라인 검증 스크립트
 |
-|-- templates/                         # [PLANNED] Jinja2 HTML 템플릿
-|   |-- base.html
-|   |-- dashboard.html
-|   +-- result.html
+|-- templates/
+|   +-- index.html                     # ✅ Bootstrap 5 Dark Mode 대시보드
 |
-|-- static/                            # [PLANNED] CSS/JS 정적 파일
-|   +-- style.css
-|
-|-- k8s/                               # [PLANNED] Kubernetes 매니페스트
+|-- k8s/                               # [Day 5-6] Kubernetes 매니페스트
 |   |-- namespace.yaml
 |   |-- configmap.yaml
 |   |-- secret.yaml
@@ -235,23 +317,36 @@ stock_backtest/
 |   |-- mysql-statefulset.yaml
 |   +-- ingress.yaml
 |
-|-- data/                              # OHLCV CSV 데이터 (10 종목)
-
+|-- data/                              # OHLCV CSV 데이터 (AAPL.csv 데모 포함)
 ```
 
 ---
 
-## 5. Short-Term Roadmap
+## 6. Short-Term Roadmap
 
-### Day 3 -- Flask Web Dashboard
+**Note:** Roadmap is high-level only. Detailed task lists belong in `RETROSPECTIVE.md` or Issues.
 
-| Task | Detail |
+### Day 3 -- Flask Web Dashboard (✅ Completed)
+
+| Task | Status |
 |---|---|
-| `app.py` 생성 | `GET /` (대시보드), `POST /backtest` (실행), `GET /result/<run_id>` |
-| HTML 템플릿 | `dashboard.html` (종목/룰/파라미터 폼), `result.html` (메트릭 테이블 + 차트) |
-| Rule-Engine 어댑터 | `verify_mvp.py`의 래퍼 패턴 재사용 |
-| 차트 렌더링 | Matplotlib Agg -> Base64 `<img>` 태그 |
-| requirements.txt 갱신 | flask, gunicorn, matplotlib 추가 |
+| `app.py` 생성 (`GET /`, `POST /run_backtest`, `GET /health`) | ✅ Done |
+| HTML 템플릿 (`index.html` — Bootstrap 5 Dark Mode, AJAX) | ✅ Done |
+| Rule-Engine 어댑터 (`_build_strategy` wrapper 패턴) | ✅ Done |
+| 차트 렌더링 (Matplotlib Agg → Base64 `<img>`) | ✅ Done |
+| Strategy Persistence (`extensions.py`, `models.py`, REST API) | ✅ Done |
+| Date range filtering (explicit `pd.to_datetime` + `tz_localize`) | ✅ Done |
+| RSI + MACD Combined Strategy (`RsiMacdRule`) | ✅ Done |
+| Security hardening (path traversal, memory leak, production config) | ✅ Done |
+
+### Day 3.9 -- UI Polishing & Pre-Docker (🔄 In Progress)
+
+| Task | Status |
+|---|---|
+| Bootstrap 5 dark mode fintech theme | 🔄 In Progress |
+| Responsive KPI cards layout | 🔄 In Progress |
+| Chart styling improvements | 🔄 In Progress |
+| Loading spinners & error alerts | 📋 Planned |
 
 ### Day 4 -- Docker
 

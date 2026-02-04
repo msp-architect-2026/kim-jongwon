@@ -79,21 +79,26 @@ def _render_chart(portfolio_df, ticker, run_id):
     """Render portfolio value chart to Base64 PNG string. No disk I/O."""
     fig = None
     try:
-        fig, ax = plt.subplots(figsize=(12, 5))
-        ax.plot(portfolio_df.index, portfolio_df["value"], color="#00d4aa", linewidth=1.2)
+        fig, ax = plt.subplots(figsize=(12, 4))
+        ax.plot(portfolio_df.index, portfolio_df["value"],
+                color="#ff9900", linewidth=1.0)
         ax.fill_between(portfolio_df.index, portfolio_df["value"],
-                        alpha=0.15, color="#00d4aa")
-        ax.set_title(f"{ticker} — Portfolio Value", fontsize=14, color="#e0e0e0")
-        ax.set_xlabel("Date", color="#aaaaaa")
-        ax.set_ylabel("Portfolio Value ($)", color="#aaaaaa")
-        ax.tick_params(colors="#aaaaaa")
-        ax.set_facecolor("#1e1e2f")
-        fig.patch.set_facecolor("#1e1e2f")
-        ax.grid(True, alpha=0.2, color="#555555")
-        fig.tight_layout()
+                        alpha=0.08, color="#ff9900")
+        ax.set_title(f"{ticker}", fontsize=11, color="#ff9900",
+                     fontfamily="monospace", loc="left", pad=8)
+        ax.set_xlabel("")
+        ax.set_ylabel("VALUE ($)", color="#666666", fontsize=8,
+                      fontfamily="monospace")
+        ax.tick_params(colors="#555555", labelsize=8)
+        ax.set_facecolor("#000000")
+        fig.patch.set_facecolor("#000000")
+        ax.grid(True, alpha=0.15, color="#1e1e1e", linewidth=0.5)
+        for spine in ax.spines.values():
+            spine.set_color("#1e1e1e")
+        fig.tight_layout(pad=1.5)
 
         buf = io.BytesIO()
-        fig.savefig(buf, format="png", dpi=100, facecolor=fig.get_facecolor())
+        fig.savefig(buf, format="png", dpi=120, facecolor=fig.get_facecolor())
         buf.seek(0)
         return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
     finally:
