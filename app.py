@@ -36,7 +36,8 @@ from adapters.adapter import (
     derive_portfolio_curve,
     normalize_trades,
     render_drawdown_chart,
-    render_portfolio_plot,
+    render_orders_chart,
+    render_trade_pnl_chart,
     render_cumulative_return_chart,
 )
 
@@ -144,7 +145,8 @@ def _build_error_response(run_id, message, status_code=400):
         # Day 3.9+ charts object (additive)
         "charts": {
             "drawdown_curve_base64": None,
-            "portfolio_plot_base64": None,
+            "portfolio_orders_base64": None,
+            "trade_pnl_base64": None,
             "cumulative_return_base64": None
         }
     }), status_code
@@ -441,8 +443,11 @@ def run_backtest():
         if 'close' in price_df_for_plot.columns and 'Close' not in price_df_for_plot.columns:
             price_df_for_plot['Close'] = price_df_for_plot['close']
 
-        # Render portfolio plot (orders + trade PnL)
-        portfolio_plot_b64 = render_portfolio_plot(price_df_for_plot, trades)
+        # Render orders chart (close price + BUY/SELL markers)
+        orders_chart_b64 = render_orders_chart(price_df_for_plot, trades)
+
+        # Render trade PnL chart (scatter of per-trade P&L %)
+        trade_pnl_chart_b64 = render_trade_pnl_chart(price_df_for_plot, trades)
 
         # Render cumulative return chart (Day 3.9+)
         cumulative_return_b64 = render_cumulative_return_chart(equity_curve)
@@ -487,7 +492,8 @@ def run_backtest():
             # Day 3.9+ charts object (additive)
             "charts": {
                 "drawdown_curve_base64": drawdown_chart_b64,
-                "portfolio_plot_base64": portfolio_plot_b64,
+                "portfolio_orders_base64": orders_chart_b64,
+                "trade_pnl_base64": trade_pnl_chart_b64,
                 "cumulative_return_base64": cumulative_return_b64
             }
         }

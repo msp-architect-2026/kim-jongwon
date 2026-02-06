@@ -1114,10 +1114,17 @@
                 <!-- TAB: PORTFOLIO -->
                 <div class="tab-panel" id="tab-portfolio">
                     <div class="chart-wrapper">
-                        <div class="chart-title">Portfolio: Orders & Trade PnL</div>
-                        <img id="portfolio-chart-img" src="" alt="Portfolio Plot" style="display:none;">
-                        <div class="chart-placeholder" id="portfolio-placeholder">
-                            No portfolio data available
+                        <div class="chart-title">Orders (Buy / Sell)</div>
+                        <img id="orders-chart-img" src="" alt="Orders Chart" style="display:none;">
+                        <div class="chart-placeholder" id="orders-placeholder">
+                            No orders data available
+                        </div>
+                    </div>
+                    <div class="chart-wrapper">
+                        <div class="chart-title">Trade PnL (%)</div>
+                        <img id="trade-pnl-chart-img" src="" alt="Trade PnL Chart" style="display:none;">
+                        <div class="chart-placeholder" id="trade-pnl-placeholder">
+                            No trade PnL data available
                         </div>
                     </div>
                     <div class="chart-wrapper">
@@ -1322,18 +1329,33 @@ function updateDrawdownTab(drawdownCurve, chartBase64) {
 }
 
 // ── UPDATE PORTFOLIO TAB ──
-function updatePortfolioTab(portfolioCurve, chartBase64, cumRetBase64) {
-    const img = document.getElementById("portfolio-chart-img");
-    const placeholder = document.getElementById("portfolio-placeholder");
+function updatePortfolioTab(ordersBase64, tradePnlBase64, cumRetBase64) {
+    // Orders chart
+    const ordersImg = document.getElementById("orders-chart-img");
+    const ordersPlaceholder = document.getElementById("orders-placeholder");
 
-    if (chartBase64) {
-        img.src = chartBase64;
-        img.style.display = "block";
-        placeholder.style.display = "none";
+    if (ordersBase64) {
+        ordersImg.src = ordersBase64;
+        ordersImg.style.display = "block";
+        ordersPlaceholder.style.display = "none";
     } else {
-        img.style.display = "none";
-        placeholder.style.display = "flex";
-        placeholder.textContent = "No portfolio data available";
+        ordersImg.style.display = "none";
+        ordersPlaceholder.style.display = "flex";
+        ordersPlaceholder.textContent = "No orders data available";
+    }
+
+    // Trade PnL chart
+    const pnlImg = document.getElementById("trade-pnl-chart-img");
+    const pnlPlaceholder = document.getElementById("trade-pnl-placeholder");
+
+    if (tradePnlBase64) {
+        pnlImg.src = tradePnlBase64;
+        pnlImg.style.display = "block";
+        pnlPlaceholder.style.display = "none";
+    } else {
+        pnlImg.style.display = "none";
+        pnlPlaceholder.style.display = "flex";
+        pnlPlaceholder.textContent = "No trade PnL data available";
     }
 
     // Cumulative return chart
@@ -1440,7 +1462,7 @@ async function runBacktest() {
             // Pass chart images from charts object (Day 3.9+)
             const charts = json.charts || {};
             updateDrawdownTab(json.drawdown_curve, charts.drawdown_curve_base64);
-            updatePortfolioTab(json.portfolio_curve, charts.portfolio_plot_base64, charts.cumulative_return_base64);
+            updatePortfolioTab(charts.portfolio_orders_base64, charts.trade_pnl_base64, charts.cumulative_return_base64);
             updateTradesTab(json.trades);
 
             // Reset to stats tab

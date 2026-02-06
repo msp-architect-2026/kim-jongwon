@@ -413,18 +413,16 @@ def render_drawdown_chart(drawdown_curve: List[Dict[str, Any]]) -> Optional[str]
             plt.close(fig)
 
 
-def render_portfolio_plot(
+def render_orders_chart(
     price_df: pd.DataFrame,
     trades: List[Dict[str, Any]]
 ) -> Optional[str]:
     """
-    Render 2-row portfolio plot:
-    - Row 1 (Orders): Close price line with BUY/SELL markers
-    - Row 2 (Trade PnL): Scatter plot of trade P&L % at exit dates
+    Render orders chart: close price line with BUY/SELL markers.
 
     Args:
         price_df: DataFrame with DatetimeIndex and 'Close' column (daily OHLC data)
-        trades: List of normalized trades with entry/exit timestamps and pnl_pct
+        trades: List of normalized trades with entry/exit timestamps
 
     Returns:
         Base64 encoded PNG string with data URI prefix, or None on failure.
@@ -432,20 +430,19 @@ def render_portfolio_plot(
     Note:
         - BUY markers: green triangle up (^) at entry dates
         - SELL markers: red triangle down (v) at exit dates
-        - Trade PnL scatter: green circles for profit, red for loss
-        - Uses exit date for PnL scatter (documented choice)
+        - Legend: fixed at upper-left (loc="upper left")
+        - Separate figure (no subplots)
     """
     if price_df is None or price_df.empty:
-        logger.warning("render_portfolio_plot received empty price_df")
+        logger.warning("render_orders_chart received empty price_df")
         return None
 
     if "Close" not in price_df.columns:
-        logger.warning("render_portfolio_plot: price_df missing 'Close' column")
+        logger.warning("render_orders_chart: price_df missing 'Close' column")
         return None
 
     fig = None
     try:
-        # Build date labels from index
         date_labels = []
         for d in price_df.index:
             if hasattr(d, 'strftime'):
@@ -456,20 +453,15 @@ def render_portfolio_plot(
         closes = price_df['Close'].values
         x_indices = list(range(len(price_df)))
 
-        fig, (ax1, ax2) = plt.subplots(
-            2, 1, figsize=(12, 8),
-            gridspec_kw={'height_ratios': [2, 1]}
-        )
+        fig, ax = plt.subplots(figsize=(12, 5))
 
-        # ═══ Row 1: Orders plot ═══
-        ax1.plot(x_indices, closes, color='#4dabf7', linewidth=1.2, label='Close')
+        ax.plot(x_indices, closes, color='#4dabf7', linewidth=1.2, label='Close')
 
         # Overlay BUY/SELL markers
         buy_x, buy_y = [], []
         sell_x, sell_y = [], []
 
         for trade in (trades or []):
-            # Entry (BUY) - extract date from ISO8601
             entry_ts = trade.get('entry_timestamp', '')
             entry_date = entry_ts[:10] if entry_ts else ''
             if entry_date in date_labels:
@@ -477,7 +469,6 @@ def render_portfolio_plot(
                 buy_x.append(idx)
                 buy_y.append(closes[idx])
 
-            # Exit (SELL)
             exit_ts = trade.get('exit_timestamp', '')
             exit_date = exit_ts[:10] if exit_ts else ''
             if exit_date in date_labels:
@@ -486,72 +477,36 @@ def render_portfolio_plot(
                 sell_y.append(closes[idx])
 
         if buy_x:
-            ax1.scatter(buy_x, buy_y, marker='^', s=80, color='#51cf66',
-                        zorder=5, label='BUY', edgecolors='white', linewidths=0.5)
+            ax.scatter(buy_x, buy_y, marker='^', s=80, color='#51cf66',
+                       zorder=5, label='BUY', edgecolors='white', linewidths=0.5)
         if sell_x:
-            ax1.scatter(sell_x, sell_y, marker='v', s=80, color='#ff6b6b',
-                        zorder=5, label='SELL', edgecolors='white', linewidths=0.5)
+            ax.scatter(sell_x, sell_y, marker='v', s=80, color='#ff6b6b',
+                       zorder=5, label='SELL', edgecolors='white', linewidths=0.5)
 
-        # Styling ax1
-        ax1.set_facecolor('#0a0a0a')
-        ax1.spines['top'].set_visible(False)
-        ax1.spines['right'].set_visible(False)
-        ax1.spines['bottom'].set_color('#333333')
-        ax1.spines['left'].set_color('#333333')
-        ax1.tick_params(colors='#888888', labelsize=9)
-        ax1.set_ylabel('Price ($)', color='#888888', fontsize=10)
-        ax1.set_title('Orders: Close Price with BUY/SELL Markers',
-                      color='#ff9900', fontsize=12, fontfamily='monospace',
-                      loc='left', pad=10)
-        ax1.legend(loc='upper left', framealpha=0.7, fontsize=9)
-        ax1.grid(True, alpha=0.15, color='#1e1e1e', linewidth=0.5)
+        # Styling
+        ax.set_facecolor('#0a0a0a')
+        fig.patch.set_facecolor('#0a0a0a')
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['bottom'].set_color('#333333')
+        ax.spines['left'].set_color('#333333')
+        ax.tick_params(colors='#888888', labelsize=9)
+        ax.set_ylabel('Price ($)', color='#888888', fontsize=10)
+        ax.set_title('Orders (Buy / Sell)',
+                     color='#ff9900', fontsize=12, fontfamily='monospace',
+                     loc='left', pad=10)
+        ax.legend(loc='upper left', framealpha=0.7, fontsize=9)
+        ax.grid(True, alpha=0.15, color='#1e1e1e', linewidth=0.5)
 
-        # ═══ Row 2: Trade PnL scatter ═══
-        pnl_x, pnl_y, pnl_colors = [], [], []
-
-        for trade in (trades or []):
-            exit_ts = trade.get('exit_timestamp', '')
-            exit_date = exit_ts[:10] if exit_ts else ''
-            pnl = trade.get('pnl_pct', 0)
-
-            if exit_date in date_labels:
-                idx = date_labels.index(exit_date)
-                pnl_x.append(idx)
-                pnl_y.append(pnl)
-                pnl_colors.append('#51cf66' if pnl >= 0 else '#ff6b6b')
-
-        if pnl_x:
-            ax2.scatter(pnl_x, pnl_y, c=pnl_colors, s=50, zorder=5,
-                        edgecolors='white', linewidths=0.5)
-
-        # Zero reference line
-        ax2.axhline(y=0, color='#666666', linestyle='-', linewidth=1)
-
-        # Styling ax2
-        ax2.set_facecolor('#0a0a0a')
-        ax2.spines['top'].set_visible(False)
-        ax2.spines['right'].set_visible(False)
-        ax2.spines['bottom'].set_color('#333333')
-        ax2.spines['left'].set_color('#333333')
-        ax2.tick_params(colors='#888888', labelsize=9)
-        ax2.set_ylabel('Trade PnL (%)', color='#888888', fontsize=10)
-        ax2.set_xlabel('Date', color='#888888', fontsize=10)
-        ax2.set_title('Trade PnL by Exit Date',
-                      color='#ff9900', fontsize=12, fontfamily='monospace',
-                      loc='left', pad=10)
-        ax2.grid(True, alpha=0.15, color='#1e1e1e', linewidth=0.5)
-
-        # Shared x-axis labels
+        # X-axis labels
         n_labels = min(10, len(date_labels))
         step = max(1, len(date_labels) // n_labels)
-        xticks = range(0, len(date_labels), step)
-        xlabels = [date_labels[i] for i in xticks]
+        ax.set_xticks(range(0, len(date_labels), step))
+        ax.set_xticklabels(
+            [date_labels[i] for i in range(0, len(date_labels), step)],
+            rotation=45, ha='right', fontsize=8
+        )
 
-        for ax in [ax1, ax2]:
-            ax.set_xticks(list(xticks))
-            ax.set_xticklabels(xlabels, rotation=45, ha='right', fontsize=8)
-
-        fig.patch.set_facecolor('#0a0a0a')
         plt.tight_layout()
 
         buf = io.BytesIO()
@@ -562,7 +517,114 @@ def render_portfolio_plot(
         return f"data:image/png;base64,{b64}"
 
     except Exception as e:
-        logger.warning(f"render_portfolio_plot failed: {e}")
+        logger.warning(f"render_orders_chart failed: {e}")
+        return None
+    finally:
+        if fig:
+            plt.close(fig)
+
+
+def render_trade_pnl_chart(
+    price_df: pd.DataFrame,
+    trades: List[Dict[str, Any]]
+) -> Optional[str]:
+    """
+    Render trade PnL scatter chart: per-trade P&L (%) at exit dates.
+
+    Args:
+        price_df: DataFrame with DatetimeIndex (for date alignment)
+        trades: List of normalized trades with exit timestamps and pnl_pct
+
+    Returns:
+        Base64 encoded PNG string with data URI prefix, or None on failure.
+
+    Note:
+        - Green circles: profit trades (pnl_pct >= 0)
+        - Red circles: loss trades (pnl_pct < 0)
+        - Zero reference line
+        - Legend: fixed at upper-left (loc="upper left")
+        - Separate figure (no subplots)
+    """
+    if price_df is None or price_df.empty:
+        logger.warning("render_trade_pnl_chart received empty price_df")
+        return None
+
+    fig = None
+    try:
+        date_labels = []
+        for d in price_df.index:
+            if hasattr(d, 'strftime'):
+                date_labels.append(d.strftime('%Y-%m-%d'))
+            else:
+                date_labels.append(str(d)[:10])
+
+        fig, ax = plt.subplots(figsize=(12, 5))
+
+        # Separate profit/loss for legend
+        profit_x, profit_y = [], []
+        loss_x, loss_y = [], []
+
+        for trade in (trades or []):
+            exit_ts = trade.get('exit_timestamp', '')
+            exit_date = exit_ts[:10] if exit_ts else ''
+            pnl = trade.get('pnl_pct', 0)
+
+            if exit_date in date_labels:
+                idx = date_labels.index(exit_date)
+                if pnl >= 0:
+                    profit_x.append(idx)
+                    profit_y.append(pnl)
+                else:
+                    loss_x.append(idx)
+                    loss_y.append(pnl)
+
+        if profit_x:
+            ax.scatter(profit_x, profit_y, color='#51cf66', s=60, zorder=5,
+                       edgecolors='white', linewidths=0.5, label='Profit')
+        if loss_x:
+            ax.scatter(loss_x, loss_y, color='#ff6b6b', s=60, zorder=5,
+                       edgecolors='white', linewidths=0.5, label='Loss')
+
+        # Zero reference line
+        ax.axhline(y=0, color='#666666', linestyle='-', linewidth=1)
+
+        # Styling
+        ax.set_facecolor('#0a0a0a')
+        fig.patch.set_facecolor('#0a0a0a')
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['bottom'].set_color('#333333')
+        ax.spines['left'].set_color('#333333')
+        ax.tick_params(colors='#888888', labelsize=9)
+        ax.set_ylabel('Trade PnL (%)', color='#888888', fontsize=10)
+        ax.set_xlabel('Date', color='#888888', fontsize=10)
+        ax.set_title('Trade PnL (%)',
+                     color='#ff9900', fontsize=12, fontfamily='monospace',
+                     loc='left', pad=10)
+        if profit_x or loss_x:
+            ax.legend(loc='upper left', framealpha=0.7, fontsize=9)
+        ax.grid(True, alpha=0.15, color='#1e1e1e', linewidth=0.5)
+
+        # X-axis labels
+        n_labels = min(10, len(date_labels))
+        step = max(1, len(date_labels) // n_labels)
+        ax.set_xticks(range(0, len(date_labels), step))
+        ax.set_xticklabels(
+            [date_labels[i] for i in range(0, len(date_labels), step)],
+            rotation=45, ha='right', fontsize=8
+        )
+
+        plt.tight_layout()
+
+        buf = io.BytesIO()
+        fig.savefig(buf, format='png', dpi=100, facecolor=fig.get_facecolor())
+        buf.seek(0)
+
+        b64 = base64.b64encode(buf.getvalue()).decode('utf-8')
+        return f"data:image/png;base64,{b64}"
+
+    except Exception as e:
+        logger.warning(f"render_trade_pnl_chart failed: {e}")
         return None
     finally:
         if fig:

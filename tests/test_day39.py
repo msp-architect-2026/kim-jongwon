@@ -28,7 +28,8 @@ from adapters.adapter import (
     safe_iso8601_utc,
     build_equity_curve,
     render_drawdown_chart,
-    render_portfolio_plot,
+    render_orders_chart,
+    render_trade_pnl_chart,
     render_cumulative_return_chart,
 )
 
@@ -1302,12 +1303,20 @@ class TestChartsObject:
         # Charts object must always exist
         assert "charts" in data, "Response must include 'charts' object"
 
-        # Required chart keys (subset check, not exact count)
-        required_chart_keys = {"drawdown_curve_base64", "portfolio_plot_base64", "cumulative_return_base64"}
+        # Required chart keys
+        required_chart_keys = {
+            "drawdown_curve_base64",
+            "portfolio_orders_base64",
+            "trade_pnl_base64",
+            "cumulative_return_base64",
+        }
         if data["status"] == "completed":
             charts = data["charts"]
             assert required_chart_keys.issubset(set(charts.keys())), \
                 f"Charts object missing required keys. Expected at least {required_chart_keys}, got {set(charts.keys())}"
+            # Deprecated key must NOT exist
+            assert "portfolio_plot_base64" not in charts, \
+                "Deprecated key 'portfolio_plot_base64' must not exist in charts object"
 
     def test_success_charts_have_base64_content(self, client):
         """On success, charts should contain Base64 PNG data."""
@@ -1336,11 +1345,17 @@ class TestChartsObject:
             assert dd_chart.startswith("data:image/png;base64,"), \
                 "drawdown_curve_base64 should be a Base64 PNG data URI"
 
-            # Portfolio plot should be non-empty Base64
-            pf_chart = charts.get("portfolio_plot_base64")
-            assert pf_chart is not None, "portfolio_plot_base64 should not be None on success"
-            assert pf_chart.startswith("data:image/png;base64,"), \
-                "portfolio_plot_base64 should be a Base64 PNG data URI"
+            # Orders chart should be non-empty Base64
+            orders_chart = charts.get("portfolio_orders_base64")
+            assert orders_chart is not None, "portfolio_orders_base64 should not be None on success"
+            assert orders_chart.startswith("data:image/png;base64,"), \
+                "portfolio_orders_base64 should be a Base64 PNG data URI"
+
+            # Trade PnL chart should be non-empty Base64
+            pnl_chart = charts.get("trade_pnl_base64")
+            assert pnl_chart is not None, "trade_pnl_base64 should not be None on success"
+            assert pnl_chart.startswith("data:image/png;base64,"), \
+                "trade_pnl_base64 should be a Base64 PNG data URI"
 
             # Cumulative return chart should be non-empty Base64
             cr_chart = charts.get("cumulative_return_base64")
@@ -1369,8 +1384,11 @@ class TestChartsObject:
         assert "charts" in data, "Error response must include 'charts' object"
         charts = data["charts"]
         assert charts["drawdown_curve_base64"] is None
-        assert charts["portfolio_plot_base64"] is None
+        assert charts["portfolio_orders_base64"] is None
+        assert charts["trade_pnl_base64"] is None
         assert charts["cumulative_return_base64"] is None
+        # Deprecated key must NOT exist
+        assert "portfolio_plot_base64" not in charts
 
     def test_500_error_has_charts_null(self, client):
         """Error response (500) must have charts with null values."""
@@ -1395,8 +1413,11 @@ class TestChartsObject:
         assert "charts" in data, "Error response must include 'charts' object"
         charts = data["charts"]
         assert charts["drawdown_curve_base64"] is None
-        assert charts["portfolio_plot_base64"] is None
+        assert charts["portfolio_orders_base64"] is None
+        assert charts["trade_pnl_base64"] is None
         assert charts["cumulative_return_base64"] is None
+        # Deprecated key must NOT exist
+        assert "portfolio_plot_base64" not in charts
 
 
 class TestRenderDrawdownChart:
@@ -1428,35 +1449,26 @@ class TestRenderDrawdownChart:
         assert len(b64_content) > 100, "Base64 content should be substantial"
 
 
-class TestRenderPortfolioPlot:
-    """Test render_portfolio_plot adapter function."""
+class TestRenderOrdersChart:
+    """Test render_orders_chart adapter function."""
 
     def test_empty_df_returns_none(self):
         """Empty price DataFrame returns None."""
-        from adapters.adapter import render_portfolio_plot
-        import pandas as pd
-
-        result = render_portfolio_plot(pd.DataFrame(), [])
+        result = render_orders_chart(pd.DataFrame(), [])
         assert result is None
 
     def test_missing_close_column_returns_none(self):
         """DataFrame without Close column returns None."""
-        from adapters.adapter import render_portfolio_plot
-        import pandas as pd
-
         df = pd.DataFrame({
             "Open": [100, 101, 102],
             "High": [105, 106, 107],
         }, index=pd.date_range("2020-01-01", periods=3))
 
-        result = render_portfolio_plot(df, [])
+        result = render_orders_chart(df, [])
         assert result is None
 
     def test_valid_data_returns_base64(self):
         """Valid price data returns Base64 PNG."""
-        from adapters.adapter import render_portfolio_plot
-        import pandas as pd
-
         df = pd.DataFrame({
             "Close": [100, 105, 110, 108, 115],
         }, index=pd.date_range("2020-01-01", periods=5))
@@ -1470,12 +1482,57 @@ class TestRenderPortfolioPlot:
             }
         ]
 
-        result = render_portfolio_plot(df, trades)
+        result = render_orders_chart(df, trades)
         assert result is not None
         assert result.startswith("data:image/png;base64,")
-        # Verify Base64 content is non-empty
         b64_content = result.replace("data:image/png;base64,", "")
         assert len(b64_content) > 100, "Base64 content should be substantial"
+
+
+class TestRenderTradePnlChart:
+    """Test render_trade_pnl_chart adapter function."""
+
+    def test_empty_df_returns_none(self):
+        """Empty price DataFrame returns None."""
+        result = render_trade_pnl_chart(pd.DataFrame(), [])
+        assert result is None
+
+    def test_valid_data_returns_base64(self):
+        """Valid price data with trades returns Base64 PNG."""
+        df = pd.DataFrame({
+            "Close": [100, 105, 110, 108, 115],
+        }, index=pd.date_range("2020-01-01", periods=5))
+
+        trades = [
+            {
+                "trade_no": 0,
+                "entry_timestamp": "2020-01-02T21:00:00+00:00",
+                "exit_timestamp": "2020-01-04T21:00:00+00:00",
+                "pnl_pct": 3.5
+            },
+            {
+                "trade_no": 1,
+                "entry_timestamp": "2020-01-03T21:00:00+00:00",
+                "exit_timestamp": "2020-01-05T21:00:00+00:00",
+                "pnl_pct": -1.2
+            },
+        ]
+
+        result = render_trade_pnl_chart(df, trades)
+        assert result is not None
+        assert result.startswith("data:image/png;base64,")
+        b64_content = result.replace("data:image/png;base64,", "")
+        assert len(b64_content) > 100, "Base64 content should be substantial"
+
+    def test_no_trades_still_renders(self):
+        """Price data with empty trades list still renders (empty scatter)."""
+        df = pd.DataFrame({
+            "Close": [100, 105, 110],
+        }, index=pd.date_range("2020-01-01", periods=3))
+
+        result = render_trade_pnl_chart(df, [])
+        assert result is not None
+        assert result.startswith("data:image/png;base64,")
 
 
 class TestRenderCumulativeReturnChart:
@@ -1649,26 +1706,37 @@ class TestDeterministicSuccessPath:
         assert "charts" in data, "Response must include 'charts' object"
         charts = data["charts"]
 
+        # Deprecated key must NOT exist
+        assert "portfolio_plot_base64" not in charts, \
+            "Deprecated 'portfolio_plot_base64' must not exist in charts"
+
         # CRITICAL ASSERTIONS: Charts must be real Base64 PNGs
         dd_chart = charts.get("drawdown_curve_base64")
         assert dd_chart is not None, "drawdown_curve_base64 must not be None"
         assert isinstance(dd_chart, str), "drawdown_curve_base64 must be a string"
         assert dd_chart.startswith("data:image/png;base64,"), \
             f"drawdown_curve_base64 must start with 'data:image/png;base64,', got: {dd_chart[:50]}"
-        # Verify substantial content (not empty)
         dd_b64_content = dd_chart.replace("data:image/png;base64,", "")
         assert len(dd_b64_content) > 100, \
             f"drawdown_curve_base64 content too short: {len(dd_b64_content)} chars"
 
-        pf_chart = charts.get("portfolio_plot_base64")
-        assert pf_chart is not None, "portfolio_plot_base64 must not be None"
-        assert isinstance(pf_chart, str), "portfolio_plot_base64 must be a string"
-        assert pf_chart.startswith("data:image/png;base64,"), \
-            f"portfolio_plot_base64 must start with 'data:image/png;base64,', got: {pf_chart[:50]}"
-        # Verify substantial content (not empty)
-        pf_b64_content = pf_chart.replace("data:image/png;base64,", "")
-        assert len(pf_b64_content) > 100, \
-            f"portfolio_plot_base64 content too short: {len(pf_b64_content)} chars"
+        orders_chart = charts.get("portfolio_orders_base64")
+        assert orders_chart is not None, "portfolio_orders_base64 must not be None"
+        assert isinstance(orders_chart, str), "portfolio_orders_base64 must be a string"
+        assert orders_chart.startswith("data:image/png;base64,"), \
+            f"portfolio_orders_base64 must start with 'data:image/png;base64,', got: {orders_chart[:50]}"
+        orders_b64_content = orders_chart.replace("data:image/png;base64,", "")
+        assert len(orders_b64_content) > 100, \
+            f"portfolio_orders_base64 content too short: {len(orders_b64_content)} chars"
+
+        pnl_chart = charts.get("trade_pnl_base64")
+        assert pnl_chart is not None, "trade_pnl_base64 must not be None"
+        assert isinstance(pnl_chart, str), "trade_pnl_base64 must be a string"
+        assert pnl_chart.startswith("data:image/png;base64,"), \
+            f"trade_pnl_base64 must start with 'data:image/png;base64,', got: {pnl_chart[:50]}"
+        pnl_b64_content = pnl_chart.replace("data:image/png;base64,", "")
+        assert len(pnl_b64_content) > 100, \
+            f"trade_pnl_base64 content too short: {len(pnl_b64_content)} chars"
 
         # Cumulative return chart
         cr_chart = charts.get("cumulative_return_base64")
@@ -1821,14 +1889,12 @@ class TestFigureLeakPrevention:
         assert after_fignums == before_fignums, \
             f"Figures leaked: {after_fignums - before_fignums}"
 
-    def test_render_portfolio_plot_closes_figure(self):
-        """render_portfolio_plot leaves no open figures after execution."""
-        # Minimal valid price DataFrame (5 points)
+    def test_render_orders_chart_closes_figure(self):
+        """render_orders_chart leaves no open figures after execution."""
         price_df = pd.DataFrame({
             "Close": [100.0, 102.0, 101.0, 104.0, 106.0],
         }, index=pd.date_range("2020-01-01", periods=5, freq="D"))
 
-        # Minimal trades list (1 completed trade)
         trades = [
             {
                 "trade_no": 0,
@@ -1839,26 +1905,22 @@ class TestFigureLeakPrevention:
         ]
 
         before_fignums = set(plt.get_fignums())
-        result = render_portfolio_plot(price_df, trades)
+        result = render_orders_chart(price_df, trades)
         after_fignums = set(plt.get_fignums())
 
-        # Verify chart was generated
-        assert result is not None, "render_portfolio_plot should return a result"
-        assert result.startswith("data:image/png;base64,"), \
-            "Result should be a Base64 PNG data URI"
+        assert result is not None, "render_orders_chart should return a result"
+        assert result.startswith("data:image/png;base64,")
 
-        # CRITICAL: No new figures should remain open
         new_figures = after_fignums - before_fignums
         assert new_figures == set(), \
-            f"render_portfolio_plot left open figures: {new_figures}"
+            f"render_orders_chart left open figures: {new_figures}"
 
-    def test_render_portfolio_plot_closes_figure_with_multiple_trades(self):
-        """render_portfolio_plot closes figures with multiple trades."""
+    def test_render_trade_pnl_chart_closes_figure(self):
+        """render_trade_pnl_chart leaves no open figures after execution."""
         price_df = pd.DataFrame({
             "Close": [100, 102, 104, 103, 105, 107, 106, 108, 110, 112],
         }, index=pd.date_range("2020-01-01", periods=10, freq="D"))
 
-        # Multiple trades
         trades = [
             {
                 "trade_no": 0,
@@ -1881,7 +1943,7 @@ class TestFigureLeakPrevention:
         ]
 
         before_fignums = set(plt.get_fignums())
-        result = render_portfolio_plot(price_df, trades)
+        result = render_trade_pnl_chart(price_df, trades)
         after_fignums = set(plt.get_fignums())
 
         assert result is not None
@@ -1901,16 +1963,23 @@ class TestFigureLeakPrevention:
         assert after_fignums == before_fignums, \
             f"Figures leaked on empty input: {after_fignums - before_fignums}"
 
-    def test_render_portfolio_plot_closes_figure_on_empty_df(self):
-        """render_portfolio_plot handles empty DataFrame without leaking."""
+    def test_render_orders_chart_closes_figure_on_empty_df(self):
+        """render_orders_chart handles empty DataFrame without leaking."""
         before_fignums = set(plt.get_fignums())
-        result = render_portfolio_plot(pd.DataFrame(), [])
+        result = render_orders_chart(pd.DataFrame(), [])
         after_fignums = set(plt.get_fignums())
 
-        # Empty input should return None
         assert result is None
+        assert after_fignums == before_fignums, \
+            f"Figures leaked on empty input: {after_fignums - before_fignums}"
 
-        # No figures should be left open
+    def test_render_trade_pnl_chart_closes_figure_on_empty_df(self):
+        """render_trade_pnl_chart handles empty DataFrame without leaking."""
+        before_fignums = set(plt.get_fignums())
+        result = render_trade_pnl_chart(pd.DataFrame(), [])
+        after_fignums = set(plt.get_fignums())
+
+        assert result is None
         assert after_fignums == before_fignums, \
             f"Figures leaked on empty input: {after_fignums - before_fignums}"
 
@@ -1971,7 +2040,8 @@ class TestFigureLeakPrevention:
         # Call multiple times (including cumulative return)
         for _ in range(5):
             render_drawdown_chart(drawdown_curve)
-            render_portfolio_plot(price_df, trades)
+            render_orders_chart(price_df, trades)
+            render_trade_pnl_chart(price_df, trades)
             render_cumulative_return_chart(equity_curve)
 
         after_fignums = set(plt.get_fignums())
