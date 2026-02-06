@@ -22,13 +22,13 @@
 
 ## 2. Project Status
 
-**Current Phase:** Day 3.9 (2026-02-06) — Advanced UI Features
+**Current Phase:** Day 4 (2026-02-07) — Ready for Dockerization & Kubernetes
 
 | Phase | Status | Scope |
 |---|---|---|
 | Day 1-2 | **✅ Completed** | Core engine verification, rules library, technical indicators, MVP pipeline |
 | Day 3 | **✅ Completed** | Flask app structure (MVC), immutable engine integration, strategy persistence (SQLite + SQLAlchemy), core web routes & API contracts (`/run_backtest`, `/api/strategies`, `/health`) |
-| Day 3.9 | **🔄 In Progress** | Advanced UI: VectorBT-style 5-tab dashboard, extended JSON schemas, adapter-layer metrics |
+| Day 3.9 | **✅ Completed** | Advanced UI: VectorBT-style 5-tab dashboard, extended JSON schemas, adapter-layer metrics, portfolio visualization refactor (separate Orders & Trade PnL charts), cumulative return chart |
 | Day 4 | **📋 Planned** | Dockerization (`Dockerfile`, `docker-compose.yml`, `.env.example`, health check) |
 | Day 5 | **📋 Planned** | Kubernetes + MySQL (StatefulSet, Deployment, ConfigMap, Secret) |
 | Day 6 | **📋 Planned** | Web → K8s Job integration (worker entrypoint, job launcher, status polling) |
@@ -627,20 +627,21 @@ stock_backtest/
 | RSI + MACD Combined Strategy (`RsiMacdRule`) | ✅ Done |
 | Security hardening (path traversal, memory leak, production config) | ✅ Done |
 
-### Day 3.9 -- Advanced UI Features (🔄 In Progress)
+### Day 3.9 -- Advanced UI Features (✅ Completed)
 
 | Task | Status | Time |
 |---|---|---|
-| 5-tab interface (Stats, Equity, Drawdown, Portfolio, Trades) | 📋 Planned | 1.5h |
-| Extended JSON response schema (equity_curve, drawdown_curve, trades) | 📋 Planned | 1h |
-| Enhanced metrics calculation (adapter layer) | 📋 Planned | 1h |
-| Drawdown chart derivation & rendering | 📋 Planned | 1h |
-| Portfolio composition chart derivation | 📋 Planned | 1h |
-| Trading fees + slippage UI controls | 📋 Planned | 30min |
-| Typography improvements (14px min, monospace numbers) | 📋 Planned | 30min |
-| Bloomberg Terminal aesthetic refinement | 📋 Planned | 1h |
+| 5-tab interface (Stats, Equity, Drawdown, Portfolio, Trades) | ✅ Done | 1.5h |
+| Extended JSON response schema (equity_curve, drawdown_curve, trades) | ✅ Done | 1h |
+| Enhanced metrics calculation (adapter layer) | ✅ Done | 1h |
+| Drawdown chart derivation & rendering | ✅ Done | 1h |
+| Portfolio visualization refactor (separate Orders & Trade PnL charts) | ✅ Done | 1h |
+| Cumulative return chart | ✅ Done | 30min |
+| Trading fees + slippage UI controls | ✅ Done | 30min |
+| Typography improvements (14px min, monospace numbers) | ✅ Done | 30min |
+| Bloomberg Terminal aesthetic refinement | ✅ Done | 1h |
 
-**Total Estimated Time: ~8 hours**
+**Day 3.9 Log:** Completed UI polish, cumulative return chart, and portfolio visualization refactor (split Orders + Trade PnL into separate full-width charts with fixed-position legends, removed deprecated combined chart).
 
 **Phase 2 Features (Day 7+):**
 - Candlestick chart with buy/sell overlays (mplfinance)
