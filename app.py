@@ -35,6 +35,8 @@ from adapters.adapter import (
     derive_drawdown_curve,
     derive_portfolio_curve,
     normalize_trades,
+    render_drawdown_chart,
+    render_portfolio_plot,
 )
 
 app = Flask(__name__)
@@ -138,6 +140,11 @@ def _build_error_response(run_id, message, status_code=400):
         "portfolio_curve": [],
         "chart_base64": None,  # Must always exist per contract
         "chart_image": None,   # Backward compatibility for older clients
+        # Day 3.9+ charts object (additive)
+        "charts": {
+            "drawdown_curve_base64": None,
+            "portfolio_plot_base64": None
+        }
     }), status_code
 
 
@@ -422,6 +429,19 @@ def run_backtest():
         # --- Chart (in-memory Base64) ---
         chart_b64 = _render_chart(portfolio_df, ticker_name, run_id)
 
+        # --- Day 3.9+ Charts (drawdown + portfolio plot) ---
+        # Render drawdown curve chart
+        drawdown_chart_b64 = render_drawdown_chart(drawdown_curve)
+
+        # Prepare price data for portfolio plot (needs Close column)
+        # Handle both 'Close' and 'close' column names
+        price_df_for_plot = df.copy()
+        if 'close' in price_df_for_plot.columns and 'Close' not in price_df_for_plot.columns:
+            price_df_for_plot['Close'] = price_df_for_plot['close']
+
+        # Render portfolio plot (orders + trade PnL)
+        portfolio_plot_b64 = render_portfolio_plot(price_df_for_plot, trades)
+
         # --- Build response using extended schema ---
         # FIX #3: num_trades = len(trades) (paired trades count, not raw actions)
         response = {
@@ -458,6 +478,12 @@ def run_backtest():
             "chart_base64": chart_b64,
             # Backward compatibility alias
             "chart_image": chart_b64,
+
+            # Day 3.9+ charts object (additive)
+            "charts": {
+                "drawdown_curve_base64": drawdown_chart_b64,
+                "portfolio_plot_base64": portfolio_plot_b64
+            }
         }
 
         logger.info(f"[run_id={run_id}] Backtest completed: "

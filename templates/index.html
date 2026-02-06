@@ -1103,7 +1103,7 @@
                 <div class="tab-panel" id="tab-drawdown">
                     <div class="chart-wrapper">
                         <div class="chart-title">Drawdown (%)</div>
-                        <div id="drawdown-chart" class="mini-chart" style="display:none;"></div>
+                        <img id="drawdown-chart-img" src="" alt="Drawdown Curve" style="display:none;">
                         <div class="chart-placeholder" id="drawdown-placeholder">
                             No drawdown data available
                         </div>
@@ -1124,19 +1124,10 @@
                 <!-- TAB: PORTFOLIO -->
                 <div class="tab-panel" id="tab-portfolio">
                     <div class="chart-wrapper">
-                        <div class="chart-title">Portfolio Composition</div>
-                        <div class="portfolio-legend" id="portfolio-legend" style="display:none;">
-                            <div class="legend-item">
-                                <div class="legend-dot cash"></div>
-                                <span>Cash</span>
-                            </div>
-                            <div class="legend-item">
-                                <div class="legend-dot position"></div>
-                                <span>Position</span>
-                            </div>
-                        </div>
+                        <div class="chart-title">Portfolio: Orders & Trade PnL</div>
+                        <img id="portfolio-chart-img" src="" alt="Portfolio Plot" style="display:none;">
                         <div class="chart-placeholder" id="portfolio-placeholder">
-                            Not available (Phase 2)
+                            No portfolio data available
                         </div>
                         <div id="portfolio-table-wrapper" style="width:100%; display:none; margin-top:16px;">
                             <table class="trades-table" id="portfolio-table">
@@ -1332,59 +1323,82 @@ function updateEquityTab(chartBase64) {
 }
 
 // ── UPDATE DRAWDOWN TAB ──
-function updateDrawdownTab(drawdownCurve) {
+function updateDrawdownTab(drawdownCurve, chartBase64) {
+    const img = document.getElementById("drawdown-chart-img");
     const placeholder = document.getElementById("drawdown-placeholder");
     const tableWrapper = document.getElementById("drawdown-table-wrapper");
     const tbody = document.querySelector("#drawdown-table tbody");
 
-    if (!drawdownCurve || drawdownCurve.length === 0) {
-        placeholder.style.display = "flex";
-        tableWrapper.style.display = "none";
-        return;
+    // Show chart image if available
+    if (chartBase64) {
+        img.src = chartBase64;
+        img.style.display = "block";
+        placeholder.style.display = "none";
+    } else {
+        img.style.display = "none";
+
+        if (!drawdownCurve || drawdownCurve.length === 0) {
+            placeholder.style.display = "flex";
+            tableWrapper.style.display = "none";
+            return;
+        }
+        placeholder.style.display = "none";
     }
 
-    placeholder.style.display = "none";
-    tableWrapper.style.display = "block";
-
-    // Show last 20 entries (most recent)
-    const recent = drawdownCurve.slice(-20);
-    tbody.innerHTML = recent.map(d => `
-        <tr>
-            <td>${d.date}</td>
-            <td class="${d.drawdown_pct < 0 ? 'negative' : 'neutral'}">${fmt(d.drawdown_pct, 2)}%</td>
-        </tr>
-    `).join("");
+    // Show table with last 20 entries
+    if (drawdownCurve && drawdownCurve.length > 0) {
+        tableWrapper.style.display = "block";
+        const recent = drawdownCurve.slice(-20);
+        tbody.innerHTML = recent.map(d => `
+            <tr>
+                <td>${d.date}</td>
+                <td class="${d.drawdown_pct < 0 ? 'negative' : 'neutral'}">${fmt(d.drawdown_pct, 2)}%</td>
+            </tr>
+        `).join("");
+    } else {
+        tableWrapper.style.display = "none";
+    }
 }
 
 // ── UPDATE PORTFOLIO TAB ──
-function updatePortfolioTab(portfolioCurve) {
+function updatePortfolioTab(portfolioCurve, chartBase64) {
+    const img = document.getElementById("portfolio-chart-img");
     const placeholder = document.getElementById("portfolio-placeholder");
-    const legend = document.getElementById("portfolio-legend");
     const tableWrapper = document.getElementById("portfolio-table-wrapper");
     const tbody = document.querySelector("#portfolio-table tbody");
 
-    if (!portfolioCurve || portfolioCurve.length === 0) {
-        placeholder.style.display = "flex";
-        placeholder.textContent = "Not available (Phase 2)";
-        legend.style.display = "none";
-        tableWrapper.style.display = "none";
-        return;
+    // Show chart image if available
+    if (chartBase64) {
+        img.src = chartBase64;
+        img.style.display = "block";
+        placeholder.style.display = "none";
+    } else {
+        img.style.display = "none";
+
+        if (!portfolioCurve || portfolioCurve.length === 0) {
+            placeholder.style.display = "flex";
+            placeholder.textContent = "No portfolio data available";
+            tableWrapper.style.display = "none";
+            return;
+        }
+        placeholder.style.display = "none";
     }
 
-    placeholder.style.display = "none";
-    legend.style.display = "flex";
-    tableWrapper.style.display = "block";
-
-    // Show last 20 entries (most recent)
-    const recent = portfolioCurve.slice(-20);
-    tbody.innerHTML = recent.map(p => `
-        <tr>
-            <td>${p.date}</td>
-            <td>${fmtCurrency(p.cash)}</td>
-            <td>${fmtCurrency(p.position)}</td>
-            <td>${fmtCurrency(p.total)}</td>
-        </tr>
-    `).join("");
+    // Show table with last 20 entries
+    if (portfolioCurve && portfolioCurve.length > 0) {
+        tableWrapper.style.display = "block";
+        const recent = portfolioCurve.slice(-20);
+        tbody.innerHTML = recent.map(p => `
+            <tr>
+                <td>${p.date}</td>
+                <td>${fmtCurrency(p.cash)}</td>
+                <td>${fmtCurrency(p.position)}</td>
+                <td>${fmtCurrency(p.total)}</td>
+            </tr>
+        `).join("");
+    } else {
+        tableWrapper.style.display = "none";
+    }
 }
 
 // ── UPDATE TRADES TAB ──
@@ -1472,8 +1486,11 @@ async function runBacktest() {
             // Update all tabs
             updateStatsTab(json.metrics);
             updateEquityTab(json.chart_base64 || json.chart_image);
-            updateDrawdownTab(json.drawdown_curve);
-            updatePortfolioTab(json.portfolio_curve);
+
+            // Pass chart images from charts object (Day 3.9+)
+            const charts = json.charts || {};
+            updateDrawdownTab(json.drawdown_curve, charts.drawdown_curve_base64);
+            updatePortfolioTab(json.portfolio_curve, charts.portfolio_plot_base64);
             updateTradesTab(json.trades);
 
             // Reset to stats tab
