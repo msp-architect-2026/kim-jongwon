@@ -1,6 +1,8 @@
 """
 Flask Web Dashboard for Stock Backtesting Platform
 Controller layer only -- does NOT modify engine logic.
+
+Day 3.9: Extended request/response schema with VectorBT-style dashboard support.
 """
 
 import matplotlib
@@ -26,6 +28,14 @@ from rules.base_rule import RuleMetadata
 
 from extensions import db
 from models import Strategy
+
+# Adapter layer imports (Day 3.9)
+from adapters.adapter import (
+    build_equity_curve,
+    derive_drawdown_curve,
+    derive_portfolio_curve,
+    normalize_trades,
+)
 
 app = Flask(__name__)
 logger = logging.getLogger(__name__)
@@ -106,6 +116,40 @@ def _render_chart(portfolio_df, ticker, run_id):
             plt.close(fig)
 
 
+def _build_error_response(run_id, message, status_code=400):
+    """Build standardized error response with all required fields.
+
+    ALL response keys must always exist per CLAUDE.md contract.
+    Includes backward-compatibility keys for older clients.
+    """
+    return jsonify({
+        "run_id": run_id,
+        "status": "failed",
+        "error_message": message,
+        "metrics": {
+            "total_return_pct": 0.0,
+            "sharpe_ratio": 0.0,
+            "max_drawdown_pct": 0.0,
+            "num_trades": 0
+        },
+        "equity_curve": [],
+        "drawdown_curve": [],
+        "trades": [],
+        "portfolio_curve": [],
+        "chart_base64": None,  # Must always exist per contract
+        "chart_image": None,   # Backward compatibility for older clients
+    }), status_code
+
+
+def _is_empty_or_null(value):
+    """Check if a value is None, empty string, or whitespace-only."""
+    if value is None:
+        return True
+    if isinstance(value, str) and value.strip() == "":
+        return True
+    return False
+
+
 @app.route("/")
 def index():
     tickers = _scan_tickers()
@@ -115,40 +159,111 @@ def index():
 
 @app.route("/run_backtest", methods=["POST"])
 def run_backtest():
-    run_id = str(uuid.uuid4())
+    # Use provided run_id or generate new one
+    data = request.get_json(force=True) or {}
+    run_id = data.get("run_id") or str(uuid.uuid4())
     logger.info(f"[run_id={run_id}] Backtest request received")
 
     try:
-        data = request.get_json(force=True)
         if not data:
-            return jsonify({"status": "error", "run_id": run_id,
-                            "message": "Request body is empty"}), 400
+            return _build_error_response(run_id, "Request body is empty", 400)
 
         ticker_file = data.get("ticker")
         strategy_key = data.get("strategy")
         params = data.get("params", {})
 
-        # --- Mandatory date parameters ---
-        if "start_date" not in data or "end_date" not in data:
-            return jsonify({"status": "error", "run_id": run_id,
-                            "message": "Missing required parameters: start_date, end_date"}), 400
+        # --- FIX #2: Explicit null/empty check for dates BEFORE parsing ---
+        # This prevents TypeError from pd.Timestamp(None) leaking as HTTP 500
+        start_date_raw = data.get("start_date")
+        end_date_raw = data.get("end_date")
+
+        if _is_empty_or_null(start_date_raw):
+            return _build_error_response(
+                run_id, "Missing required parameter: start_date", 400
+            )
+
+        if _is_empty_or_null(end_date_raw):
+            return _build_error_response(
+                run_id, "Missing required parameter: end_date", 400
+            )
+
+        # --- Extended parameters with defaults (Day 3.9) ---
+        initial_capital = float(data.get("initial_capital", 100000))
+        fee_rate = float(data.get("fee_rate", 0.001))
+
+        # FIX #1: Slippage strictly from slippage_bps input
+        # Default slippage_bps=0 means slippage_decimal=0.0 (not 0.002)
+        slippage_bps = float(data.get("slippage_bps", 0))
+
+        position_size = float(data.get("position_size", 10000))
+        size_type = data.get("size_type", "value")
+        direction = data.get("direction", "longonly")
+        timeframe = data.get("timeframe", "1d")
+
+        # --- Extended parameter validation ---
+        if fee_rate < 0:
+            return _build_error_response(
+                run_id, "fee_rate must be >= 0", 400
+            )
+
+        # FIX #1: Validate slippage_bps >= 0
+        if slippage_bps < 0:
+            return _build_error_response(
+                run_id, "slippage_bps must be >= 0", 400
+            )
+
+        if position_size <= 0:
+            return _build_error_response(
+                run_id, "position_size must be > 0", 400
+            )
+
+        # Timeframe validation - only "1d" supported in Day 3.9
+        if timeframe in ("5m", "1h"):
+            return _build_error_response(
+                run_id,
+                f"Timeframe '{timeframe}' is not supported in Day 3.9. Only '1d' is available.",
+                400
+            )
+
+        if timeframe != "1d":
+            return _build_error_response(
+                run_id,
+                f"Invalid timeframe: {timeframe}. Supported values: 1d",
+                400
+            )
+
+        # Direction validation - only "longonly" supported in Day 3.9
+        if direction == "longshort":
+            return _build_error_response(
+                run_id,
+                "Direction 'longshort' is not supported in Day 3.9. Only 'longonly' is available.",
+                400
+            )
+
+        if direction not in ("longonly", "longshort"):
+            return _build_error_response(
+                run_id,
+                f"Invalid direction: {direction}. Supported values: longonly, longshort",
+                400
+            )
 
         # --- Input validation (400 errors) ---
         if not ticker_file:
-            return jsonify({"status": "error", "run_id": run_id,
-                            "message": "Missing 'ticker' field"}), 400
+            return _build_error_response(run_id, "Missing 'ticker' field", 400)
 
         # Sanitize filename to prevent path traversal
         ticker_file = secure_filename(ticker_file)
 
         if strategy_key not in STRATEGY_MAP:
-            return jsonify({"status": "error", "run_id": run_id,
-                            "message": f"Unknown strategy: {strategy_key}"}), 400
+            return _build_error_response(
+                run_id, f"Unknown strategy: {strategy_key}", 400
+            )
 
         csv_path = os.path.join(DATA_DIR, ticker_file)
         if not os.path.isfile(csv_path):
-            return jsonify({"status": "error", "run_id": run_id,
-                            "message": f"Data file not found: {ticker_file}"}), 400
+            return _build_error_response(
+                run_id, f"Data file not found: {ticker_file}", 400
+            )
 
         ticker_name = ticker_file.replace(".csv", "")
         logger.info(f"[run_id={run_id}] Running {strategy_key} on {ticker_name}")
@@ -160,31 +275,37 @@ def run_backtest():
             df["Date"] = df["Date"].dt.tz_localize(None)
         except Exception as e:
             logger.exception(f"[run_id={run_id}] Failed to load or parse CSV data")
-            return jsonify({"status": "error", "run_id": run_id,
-                            "message": "Failed to load or parse CSV data"}), 500
+            return _build_error_response(
+                run_id, "Failed to load or parse CSV data", 500
+            )
 
-        # --- Date range filtering ---
+        # --- FIX #2: Date parsing with explicit error handling ---
+        # Parse dates AFTER null check, treat parse errors as HTTP 400
         try:
-            start_date = pd.Timestamp(data["start_date"])
-        except ValueError:
-            return jsonify({"status": "error", "run_id": run_id,
-                            "message": f"Invalid start_date format: {data['start_date']}"}), 400
+            start_date = pd.Timestamp(start_date_raw)
+        except (ValueError, TypeError) as e:
+            return _build_error_response(
+                run_id, f"Invalid start_date format: {start_date_raw}", 400
+            )
 
         try:
-            end_date = pd.Timestamp(data["end_date"])
-        except ValueError:
-            return jsonify({"status": "error", "run_id": run_id,
-                            "message": f"Invalid end_date format: {data['end_date']}"}), 400
+            end_date = pd.Timestamp(end_date_raw)
+        except (ValueError, TypeError) as e:
+            return _build_error_response(
+                run_id, f"Invalid end_date format: {end_date_raw}", 400
+            )
 
         if start_date > end_date:
-            return jsonify({"status": "error", "run_id": run_id,
-                            "message": "start_date must be before end_date"}), 400
+            return _build_error_response(
+                run_id, "start_date must be before end_date", 400
+            )
 
         df = df[(df["Date"] >= start_date) & (df["Date"] <= end_date)]
 
         if df.empty:
-            return jsonify({"status": "error", "run_id": run_id,
-                            "message": "No data in selected date range"}), 400
+            return _build_error_response(
+                run_id, "No data in selected date range", 400
+            )
 
         df = df.set_index("Date")
 
@@ -237,37 +358,105 @@ def run_backtest():
                                macd_fast=fast, macd_slow=slow, macd_signal=sig)
 
         # --- Run backtest (engine untouched) ---
+        # FIX #1: Convert slippage from basis points to decimal
+        # slippage_bps=0 => slippage_decimal=0.0 (strict contract compliance)
+        slippage_decimal = slippage_bps / 10000.0
+
         strategy_func = _build_strategy(strategy_key, rule, df)
-        engine = BacktestEngine(initial_capital=100000)
+        engine = BacktestEngine(
+            initial_capital=initial_capital,
+            commission=fee_rate,
+            slippage=slippage_decimal
+        )
         result = engine.run(df, strategy_func, ticker=ticker_name)
 
         if "error" in result:
-            return jsonify({"status": "error", "run_id": run_id,
-                            "message": result["error"]}), 400
+            return _build_error_response(run_id, result["error"], 400)
 
-        # --- Performance metrics (from existing PerformanceMetrics) ---
-        full_report = PerformanceMetrics.generate_full_report(result)
+        # --- Performance metrics ---
+        # FIX #5: Compute Sharpe Ratio with risk_free_rate=0.0 per CLAUDE.md spec
+        # DO NOT modify backtest/metrics.py - override via argument only
+        portfolio_df = result["portfolio_history"]
+        daily_returns = portfolio_df['value'].pct_change().dropna()
+
+        # Compute Sharpe with risk_free_rate=0.0 (CLAUDE.md requirement)
+        sharpe_ratio = PerformanceMetrics.calculate_sharpe_ratio(
+            daily_returns,
+            risk_free_rate=0.0  # STRICT: zero risk-free rate per spec
+        )
+
+        # Compute Sortino with risk_free_rate=0.0 for consistency
+        sortino_ratio = PerformanceMetrics.calculate_sortino_ratio(
+            daily_returns,
+            risk_free_rate=0.0
+        )
+
+        # Get max drawdown info
+        drawdown_info = PerformanceMetrics.calculate_max_drawdown(portfolio_df['value'])
+
+        # Get win rate and profit factor
+        win_info = PerformanceMetrics.calculate_win_rate(result['trades'])
+
+        # Calculate Calmar ratio
+        days = len(portfolio_df)
+        years = days / 252.0 if days > 0 else 1.0
+        calmar_ratio = PerformanceMetrics.calculate_calmar_ratio(
+            result['total_return'],
+            drawdown_info['max_drawdown'],
+            years
+        )
+
+        # --- Build extended response (Day 3.9) ---
+        # Build equity_curve from portfolio history
+        equity_curve = build_equity_curve(portfolio_df)
+
+        # Derive drawdown_curve from equity_curve (adapter layer)
+        drawdown_curve = derive_drawdown_curve(equity_curve)
+
+        # Derive portfolio_curve from portfolio history
+        portfolio_curve = derive_portfolio_curve(equity_curve, portfolio_df)
+
+        # Normalize trades to extended schema
+        trades = normalize_trades(result["trades"], fee_rate=fee_rate)
 
         # --- Chart (in-memory Base64) ---
-        chart_b64 = _render_chart(result["portfolio_history"], ticker_name, run_id)
+        chart_b64 = _render_chart(portfolio_df, ticker_name, run_id)
 
-        # --- Build response using engine-returned values only ---
+        # --- Build response using extended schema ---
+        # FIX #3: num_trades = len(trades) (paired trades count, not raw actions)
         response = {
-            "status": "success",
+            # Required top-level keys
             "run_id": run_id,
+            "status": "completed",
+            "error_message": None,
+
+            # Metrics (Day 3.9 required)
             "metrics": {
+                "total_return_pct": round(float(result["total_return_pct"]), 2),
+                "sharpe_ratio": round(float(sharpe_ratio), 2),  # FIX #5: Using risk_free_rate=0.0
+                "max_drawdown_pct": round(float(drawdown_info["max_drawdown_pct"]), 2),
+                "num_trades": len(trades),  # FIX #3: Paired trades count
+                # Additional metrics (available from engine/metrics)
                 "ticker": ticker_name,
                 "initial_capital": float(result["initial_capital"]),
-                "final_value": float(result["final_value"]),
-                "total_return_pct": float(result["total_return_pct"]),
-                "num_trades": int(result["num_trades"]),
-                "win_rate": float(result["win_rate"]),
-                "sharpe_ratio": float(full_report["risk_metrics"]["sharpe_ratio"]),
-                "sortino_ratio": float(full_report["risk_metrics"]["sortino_ratio"]),
-                "max_drawdown_pct": float(full_report["risk_metrics"]["max_drawdown_pct"]),
-                "calmar_ratio": float(full_report["risk_metrics"]["calmar_ratio"]),
-                "profit_factor": float(full_report["trading_metrics"]["profit_factor"]),
+                "final_value": round(float(result["final_value"]), 2),
+                "win_rate": round(float(win_info["win_rate"]), 1),
+                "sortino_ratio": round(float(sortino_ratio), 2),
+                "calmar_ratio": round(float(calmar_ratio), 2),
+                "profit_factor": round(float(win_info["profit_factor"]), 2),
             },
+
+            # Time-series data (Day 3.9 required)
+            "equity_curve": equity_curve,
+            "drawdown_curve": drawdown_curve,
+            "portfolio_curve": portfolio_curve,
+
+            # Trade details
+            "trades": trades,
+
+            # Chart (legacy + Day 3.9)
+            "chart_base64": chart_b64,
+            # Backward compatibility alias
             "chart_image": chart_b64,
         }
 
@@ -277,8 +466,7 @@ def run_backtest():
 
     except Exception as e:
         logger.exception(f"[run_id={run_id}] Unhandled error")
-        return jsonify({"status": "error", "run_id": run_id,
-                        "message": "Internal server error"}), 500
+        return _build_error_response(run_id, "Internal server error", 500)
 
 
 @app.route("/api/strategies", methods=["GET"])
