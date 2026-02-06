@@ -22,13 +22,13 @@
 
 ## 2. Project Status
 
-**Current Phase:** Day 3.9 (2026-02-06) — UI Polishing & Pre-Docker
+**Current Phase:** Day 3.9 (2026-02-06) — Advanced UI Features
 
 | Phase | Status | Scope |
 |---|---|---|
 | Day 1-2 | **✅ Completed** | Core engine verification, rules library, technical indicators, MVP pipeline |
 | Day 3 | **✅ Completed** | Flask app structure (MVC), immutable engine integration, strategy persistence (SQLite + SQLAlchemy), core web routes & API contracts (`/run_backtest`, `/api/strategies`, `/health`) |
-| Day 3.9 | **🔄 In Progress** | Frontend UI refinement: Fintech-style Bootstrap dark mode, improved chart visualization, responsive KPI cards, loading spinners & error alerts |
+| Day 3.9 | **🔄 In Progress** | Advanced UI: VectorBT-style 5-tab dashboard, extended JSON schemas, adapter-layer metrics |
 | Day 4 | **📋 Planned** | Dockerization (`Dockerfile`, `docker-compose.yml`, `.env.example`, health check) |
 | Day 5 | **📋 Planned** | Kubernetes + MySQL (StatefulSet, Deployment, ConfigMap, Secret) |
 | Day 6 | **📋 Planned** | Web → K8s Job integration (worker entrypoint, job launcher, status polling) |
@@ -63,24 +63,214 @@
 
 ---
 
-## 4. Strict Rules (Non-Negotiable)
+## 4. UI Specification (Day 3.9+) — VectorBT-Style Dashboard
+
+This section defines the **data contracts and UI expectations** for the advanced dashboard.
+
+### Data Flow Overview
+```
+User Input (Backtesting Controls)
+  ↓
+POST /run_backtest (JSON Request)
+  ↓
+Flask Controller
+  ↓
+Backtest Engine (immutable)
+  → Outputs: equity_curve, trades, positions
+  ↓
+Adapter Layer (post-processing)
+  → Derives: drawdown_curve, portfolio_curve
+  → Computes: win_rate, profit_factor, exposure, etc.
+  → Generates: Base64 PNG charts (optional)
+  ↓
+JSON Response (extended schema)
+  ↓
+Frontend UI (5 tabs)
+  → Stats | Equity | Drawdown | Portfolio | Trades
+```
+
+Note: `positions` represent engine-level position state and may be used directly or aggregated downstream for portfolio-level visualizations.
+
+---
+
+### Backtesting Controls (Input UI)
+
+The backtesting form exposes the following inputs:
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| Ticker | string | "AAPL" | Stock symbol |
+| Start Date | date | - | YYYY-MM-DD format |
+| End Date | date | - | YYYY-MM-DD format |
+| Rule | dropdown | "RSI" | Options: RSI, MACD, RSI+MACD |
+| Initial Capital | number | 100000 | Starting portfolio value |
+| Fee Rate | number | 0.001 | Decimal fraction (0.001 = 0.1% per trade) |
+| Slippage | number | 0 | Basis points (not implemented Day 3.9) |
+| Position Size | number | 10000 | Amount per trade |
+| Size Type | dropdown | "value" | Options: "value" (dollars) or "percent" (%) |
+| Direction | dropdown | "longonly" | Options: "longonly" or "longshort" |
+| Timeframe | dropdown | "1d" | Daily only (Day 3.9); "5m" and "1h" are Phase 2 |
+
+
+---
+
+### Dashboard Tabs (Data Contracts)
+
+#### Tab A: Backtesting Stats
+
+Displays summary KPI cards.
+
+**Required KPIs (Day 3.9):**
+- Total Return (%)
+- Sharpe Ratio
+- Max Drawdown (%)
+- Number of Trades
+
+**Enhanced KPIs (Phase 2):**
+- CAGR: `((final_equity / initial_capital) ^ (1 / years)) - 1`
+- Volatility: `std(daily_returns) * sqrt(252)` (annualized)
+- Win Rate: `(profitable_trades / total_trades) * 100`
+- Average Trade Return: `mean(trade_pnl_pct)`
+- Exposure %: `(days_in_market / total_days) * 100`
+- Profit Factor: `total_profit / abs(total_loss)`
+
+Formulas are **for documentation only** (not prescriptive implementation).
+
+Sharpe Ratio is computed using daily returns, assuming a zero risk-free rate,
+and annualized by multiplying by sqrt(252).
+
+---
+
+#### Tab B: List of Trades
+
+Displays detailed trade history in a table.
+
+**Trade Schema:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| trade_no | int | 0-indexed sequence |
+| side | string | "BUY" or "SELL" |
+| size | int | Number of shares |
+| entry_timestamp | ISO8601 | Format: `YYYY-MM-DDTHH:MM:SS+00:00` (UTC) |
+| entry_price | float | Entry price (2 decimals) |
+| entry_fees | float | Fee: `entry_price * size * fee_rate` |
+| exit_timestamp | ISO8601 | Exit time (UTC) |
+| exit_price | float | Exit price (2 decimals) |
+| exit_fees | float | Fee: `exit_price * size * fee_rate` |
+| pnl_abs | float | P/L: `(exit_price - entry_price) * size - entry_fees - exit_fees`|
+| pnl_pct | float | Return: `pnl_abs / (entry_price * size) * 100` |
+| holding_period | float | Days: `(exit_ts - entry_ts).total_seconds() / 86400` |
+
+**Timestamp Convention:**
+- Daily data (`timeframe='1d'`): Default to market close
+- US market close: 16:00 ET = 21:00 UTC
+- Example: `2020-01-15T21:00:00+00:00`
+
+---
+
+#### Tab C: Equity Curve
+
+Time-series chart of portfolio value.
+
+**Data Contract:**
+```json
+"equity_curve": [
+  { "date": "2020-01-01", "equity": 100000 },
+  { "date": "2020-01-02", "equity": 100523 }
+]
+```
+
+Primary canonical time-series. All other series derive from this.
+
+---
+
+#### Tab D: Drawdown
+
+Time-series chart of drawdown percentage.
+
+**Data Contract:**
+```json
+"drawdown_curve": [
+  { "date": "2020-01-01", "drawdown_pct": 0.0 },
+  { "date": "2020-01-02", "drawdown_pct": -1.2 }
+]
+```
+
+**Definition:**
+```
+drawdown_pct = ((peak_equity - current_equity) / peak_equity) * 100
+where peak_equity = running maximum of equity_curve
+```
+
+**Important:** This is **derivable from equity_curve** in the Adapter layer.
+Does NOT require engine modification.
+
+---
+
+#### Tab E: Portfolio Composition
+
+Visualizes cash vs. position value over time.
+
+**Data Contract (Optional / Derivable):**
+```json
+"portfolio_curve": [
+  {
+    "date": "2020-01-01",
+    "cash": 90000,
+    "position": 10000,
+    "total": 100000
+  }
+]
+```
+
+**Derivation Source:**
+- `equity_curve` (total value)
+- `trades` (executed buy/sell actions)
+- Cash flow implied by position sizing
+
+This is computed in the **Adapter layer**, NOT the engine.
+
+---
+
+#### Tab F: Candlestick + Signals (Phase 2)
+
+**Status:** Planned for Day 7+ (not Day 3.9).
+
+- OHLC candlestick chart with BUY/SELL markers
+- Library: mplfinance (Matplotlib wrapper)
+- Intraday timeframes (`5m`, `1h`): Phase 2 only
+
+**Data Contract (Phase 2):**
+```json
+"price_candles": [
+  { "date": "2020-01-01", "open": 150.0, "high": 153.5, "low": 149.2, "close": 152.8, "volume": 1234567 }
+],
+"signals": [
+  { "date": "2020-01-15", "action": "BUY", "price": 153.17 }
+]
+```
+
+---
+
+## 5. Strict Rules (Non-Negotiable)
 
 ### Terminology (IMPORTANT)
 
 To avoid ambiguity in design and implementation, the following terms are used consistently:
 
-- **Rule**:  
-  A trading logic implementation defined in `rules/`  
-  (e.g., `RsiRule`, `MacdRule`, `RsiMacdRule`).  
+- **Rule**:
+  A trading logic implementation defined in `rules/`
+  (e.g., `RsiRule`, `MacdRule`, `RsiMacdRule`).
   Rules define **how trades are generated** and are part of the immutable core logic.
 
-- **Strategy Preset**:  
-  A user-defined UI configuration persisted via SQLAlchemy  
-  (stored in the `Strategy` ORM model).  
-  Presets store **parameters only** (dates, rule type, UI settings) and  
+- **Strategy Preset**:
+  A user-defined UI configuration persisted via SQLAlchemy
+  (stored in the `Strategy` ORM model).
+  Presets store **parameters only** (dates, rule type, UI settings) and
   **do NOT define trading logic**.
 
-Rule logic MUST live in `rules/`.  
+Rule logic MUST live in `rules/`.
 Strategy Presets MUST NOT introduce or modify trading behavior.
 
 
@@ -117,6 +307,32 @@ class EnhancedEngine:
 # WRONG: engine.py 직접 수정
 ```
 
+#### Post-Processing Allowance (Adapter Layer)
+
+The Controller/Adapter layer MAY compute **derived metrics and visualizations**
+from engine outputs WITHOUT modifying engine trading logic.
+
+**Allowed in Adapter:**
+- ✅ Deriving `drawdown_curve` from `equity_curve` (peak-to-trough)
+- ✅ Computing `portfolio_curve` from `equity_curve` + `trades`
+- ✅ Computing `win_rate`, `profit_factor`, `exposure_pct` from `trades`
+- ✅ Generating PNG charts via Matplotlib
+- ✅ Formatting timestamps to ISO8601
+
+**Still Forbidden:**
+- ❌ Modifying signal generation logic
+- ❌ Changing trade execution rules
+- ❌ Altering engine-internal formulas (Sharpe, returns)
+
+**Important Clarification:**
+Re-formatting or re-scaling engine-provided metrics is allowed;
+re-computation using different formulas is not.
+
+**Principle:**
+> If data can be derived from existing engine outputs (equity, trades),
+> compute it in the adapter. Only modify the engine if **internal loop access**
+> is required (e.g., tracking peak equity during execution).
+
 ### Rule 2 -- Immutable API Contracts
 
 **This is the target Web↔Worker contract, enforced starting Day 5.**
@@ -124,27 +340,99 @@ class EnhancedEngine:
 Web(Controller)과 Worker(Job) 간 JSON Schema는 **한번 정의되면 동결**.
 기존 필드 삭제/이름 변경 금지. 새 필드 추가 시 기본값 필수.
 ```json
-// Backtest Request (Web -> Worker)
+// Backtest Request (Web -> Worker) - Day 3.9+ Extended
 {
-    "run_id": "uuid",
-    "ticker": "AAPL",
-    "rule_id": "RSI_14_30_70",
-    "params": {},
-    "start_date": "2020-01-01",
-    "end_date": "2024-01-01",
-    "initial_capital": 100000
-}
+  // Core fields (existing, unchanged)
+  "run_id": "uuid",
+  "ticker": "AAPL",
+  "rule_id": "RSI_14_30_70",
+  "params": {},
+  "start_date": "2020-01-01",  // YYYY-MM-DD
+  "end_date": "2024-01-01",
 
-// Backtest Result (Worker -> DB)
+  // NEW: Trading parameters (Day 3.9)
+  "initial_capital": 100000,   // Default: 100000
+  "fee_rate": 0.001,           // Default: 0.001 (0.1%), decimal fraction
+  "slippage_bps": 0,           // Default: 0 (not implemented Day 3.9)
+  "position_size": 10000,      // Default: 10000
+  "size_type": "value",        // Default: "value" | "percent"
+  "direction": "longonly",     // Default: "longonly" | "longshort" 
+  "timeframe": "1d" // Default: "1d" | "5m" | "1h" (Phase 2)
+}
+```
+
+**Backward Compatibility:**
+- All new fields have defaults
+- Existing fields unchanged
+- Additive only (no breaking changes)
+
+```json
+// Backtest Result (Worker -> Web/DB) - Day 3.9+ Extended
 {
-    "run_id": "uuid",
-    "status": "completed|failed",
+  "run_id": "uuid",
+  "status": "completed|failed",
+  "error_message": null,
+
+  // Metrics (core + enhanced)
+  "metrics": {
+    // Day 3.9 (required)
     "total_return_pct": 12.34,
     "sharpe_ratio": 1.45,
     "max_drawdown_pct": 8.21,
     "num_trades": 42,
-    "chart_base64": "data:image/png;base64,...",
-    "error_message": null
+
+    // Phase 2 (optional)
+    "cagr": 10.5,
+    "volatility": 18.2,
+    "win_rate": 65.5,
+    "avg_trade_return": 2.1,
+    "exposure_pct": 82.3,
+    "profit_factor": 1.85
+  },
+
+  // Time-series data (NEW, required for tabs)
+  "equity_curve": [
+    { "date": "2020-01-01", "equity": 100000 }
+  ],
+
+  "drawdown_curve": [
+    { "date": "2020-01-01", "drawdown_pct": 0.0 }
+  ],
+
+  // Optional / Derivable
+  "portfolio_curve": [
+    { "date": "2020-01-01", "cash": 90000, "position": 10000, "total": 100000 }
+  ],
+
+  // Trade details (NEW schema)
+  "trades": [
+    {
+      "trade_no": 0,
+      "side": "BUY",
+      "size": 100,
+      "entry_timestamp": "2020-01-15T21:00:00+00:00",
+      "entry_price": 153.17,
+      "entry_fees": 15.32,
+      "exit_timestamp": "2020-05-06T21:00:00+00:00",
+      "exit_price": 166.84,
+      "exit_fees": 16.68,
+      "pnl_abs": 1337.0,
+      "pnl_pct": 8.7,
+      "holding_period": 112.0
+    }
+  ],
+
+  // Phase 2 (candlestick tab)
+  "price_candles": [
+    { "date": "2020-01-01", "open": 150.0, "high": 153.5, "low": 149.2, "close": 152.8, "volume": 1234567 }
+  ],
+
+  "signals": [
+    { "date": "2020-01-15", "action": "BUY", "price": 153.17 }
+  ],
+
+  // Legacy (still supported)
+  "chart_base64": "data:image/png;base64,..."
 }
 ```
 
@@ -262,7 +550,7 @@ logger.info(f"[run_id={run_id}] Backtest completed: return={result['total_return
 
 ---
 
-## 5. Directory Structure
+## 6. Directory Structure
 ```
 stock_backtest/
 |
@@ -322,7 +610,7 @@ stock_backtest/
 
 ---
 
-## 6. Short-Term Roadmap
+## 7. Short-Term Roadmap
 
 **Note:** Roadmap is high-level only. Detailed task lists belong in `RETROSPECTIVE.md` or Issues.
 
@@ -339,14 +627,27 @@ stock_backtest/
 | RSI + MACD Combined Strategy (`RsiMacdRule`) | ✅ Done |
 | Security hardening (path traversal, memory leak, production config) | ✅ Done |
 
-### Day 3.9 -- UI Polishing & Pre-Docker (🔄 In Progress)
+### Day 3.9 -- Advanced UI Features (🔄 In Progress)
 
-| Task | Status |
-|---|---|
-| Bootstrap 5 dark mode fintech theme | 🔄 In Progress |
-| Responsive KPI cards layout | 🔄 In Progress |
-| Chart styling improvements | 🔄 In Progress |
-| Loading spinners & error alerts | 📋 Planned |
+| Task | Status | Time |
+|---|---|---|
+| 5-tab interface (Stats, Equity, Drawdown, Portfolio, Trades) | 📋 Planned | 1.5h |
+| Extended JSON response schema (equity_curve, drawdown_curve, trades) | 📋 Planned | 1h |
+| Enhanced metrics calculation (adapter layer) | 📋 Planned | 1h |
+| Drawdown chart derivation & rendering | 📋 Planned | 1h |
+| Portfolio composition chart derivation | 📋 Planned | 1h |
+| Trading fees + slippage UI controls | 📋 Planned | 30min |
+| Typography improvements (14px min, monospace numbers) | 📋 Planned | 30min |
+| Bloomberg Terminal aesthetic refinement | 📋 Planned | 1h |
+
+**Total Estimated Time: ~8 hours**
+
+**Phase 2 Features (Day 7+):**
+- Candlestick chart with buy/sell overlays (mplfinance)
+- Benchmark overlay on equity curve (Buy & Hold comparison)
+- Intraday timeframes (5m, 1h)
+- Sortable/filterable trade table
+- Additional metrics (CAGR, volatility, win_rate, profit_factor, exposure)
 
 ### Day 4 -- Docker
 
