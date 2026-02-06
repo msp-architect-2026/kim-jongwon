@@ -962,8 +962,9 @@
                     <input type="number" id="initial-capital" value="100000">
                 </div>
                 <div class="param-cell">
-                    <label>Fee Rate</label>
-                    <input type="number" id="fee-rate" value="0.001" step="0.0001">
+                    <label>Fee Rate (decimal)</label>
+                    <input type="number" id="fee-rate" value="0.001" step="0.0001" placeholder="0.001" title="Decimal fraction. Example: 0.001 = 0.1% (NOT 0.1).">
+                    <span style="font-size:10px;color:var(--text-label);margin-top:2px;display:block;">e.g. 0.001 = 0.1%</span>
                 </div>
             </div>
         </div>
@@ -1107,17 +1108,6 @@
                         <div class="chart-placeholder" id="drawdown-placeholder">
                             No drawdown data available
                         </div>
-                        <div id="drawdown-table-wrapper" style="width:100%; display:none; margin-top:16px;">
-                            <table class="trades-table" id="drawdown-table">
-                                <thead>
-                                    <tr>
-                                        <th>Date</th>
-                                        <th>Drawdown %</th>
-                                    </tr>
-                                </thead>
-                                <tbody></tbody>
-                            </table>
-                        </div>
                     </div>
                 </div>
 
@@ -1129,18 +1119,12 @@
                         <div class="chart-placeholder" id="portfolio-placeholder">
                             No portfolio data available
                         </div>
-                        <div id="portfolio-table-wrapper" style="width:100%; display:none; margin-top:16px;">
-                            <table class="trades-table" id="portfolio-table">
-                                <thead>
-                                    <tr>
-                                        <th>Date</th>
-                                        <th>Cash</th>
-                                        <th>Position</th>
-                                        <th>Total</th>
-                                    </tr>
-                                </thead>
-                                <tbody></tbody>
-                            </table>
+                    </div>
+                    <div class="chart-wrapper">
+                        <div class="chart-title">Cumulative Return (%)</div>
+                        <img id="cumret-chart-img" src="" alt="Cumulative Return" style="display:none;">
+                        <div class="chart-placeholder" id="cumret-placeholder">
+                            Not available
                         </div>
                     </div>
                 </div>
@@ -1326,78 +1310,44 @@ function updateEquityTab(chartBase64) {
 function updateDrawdownTab(drawdownCurve, chartBase64) {
     const img = document.getElementById("drawdown-chart-img");
     const placeholder = document.getElementById("drawdown-placeholder");
-    const tableWrapper = document.getElementById("drawdown-table-wrapper");
-    const tbody = document.querySelector("#drawdown-table tbody");
 
-    // Show chart image if available
     if (chartBase64) {
         img.src = chartBase64;
         img.style.display = "block";
         placeholder.style.display = "none";
     } else {
         img.style.display = "none";
-
-        if (!drawdownCurve || drawdownCurve.length === 0) {
-            placeholder.style.display = "flex";
-            tableWrapper.style.display = "none";
-            return;
-        }
-        placeholder.style.display = "none";
-    }
-
-    // Show table with last 20 entries
-    if (drawdownCurve && drawdownCurve.length > 0) {
-        tableWrapper.style.display = "block";
-        const recent = drawdownCurve.slice(-20);
-        tbody.innerHTML = recent.map(d => `
-            <tr>
-                <td>${d.date}</td>
-                <td class="${d.drawdown_pct < 0 ? 'negative' : 'neutral'}">${fmt(d.drawdown_pct, 2)}%</td>
-            </tr>
-        `).join("");
-    } else {
-        tableWrapper.style.display = "none";
+        placeholder.style.display = "flex";
     }
 }
 
 // ── UPDATE PORTFOLIO TAB ──
-function updatePortfolioTab(portfolioCurve, chartBase64) {
+function updatePortfolioTab(portfolioCurve, chartBase64, cumRetBase64) {
     const img = document.getElementById("portfolio-chart-img");
     const placeholder = document.getElementById("portfolio-placeholder");
-    const tableWrapper = document.getElementById("portfolio-table-wrapper");
-    const tbody = document.querySelector("#portfolio-table tbody");
 
-    // Show chart image if available
     if (chartBase64) {
         img.src = chartBase64;
         img.style.display = "block";
         placeholder.style.display = "none";
     } else {
         img.style.display = "none";
-
-        if (!portfolioCurve || portfolioCurve.length === 0) {
-            placeholder.style.display = "flex";
-            placeholder.textContent = "No portfolio data available";
-            tableWrapper.style.display = "none";
-            return;
-        }
-        placeholder.style.display = "none";
+        placeholder.style.display = "flex";
+        placeholder.textContent = "No portfolio data available";
     }
 
-    // Show table with last 20 entries
-    if (portfolioCurve && portfolioCurve.length > 0) {
-        tableWrapper.style.display = "block";
-        const recent = portfolioCurve.slice(-20);
-        tbody.innerHTML = recent.map(p => `
-            <tr>
-                <td>${p.date}</td>
-                <td>${fmtCurrency(p.cash)}</td>
-                <td>${fmtCurrency(p.position)}</td>
-                <td>${fmtCurrency(p.total)}</td>
-            </tr>
-        `).join("");
+    // Cumulative return chart
+    const cumImg = document.getElementById("cumret-chart-img");
+    const cumPlaceholder = document.getElementById("cumret-placeholder");
+
+    if (cumRetBase64) {
+        cumImg.src = cumRetBase64;
+        cumImg.style.display = "block";
+        cumPlaceholder.style.display = "none";
     } else {
-        tableWrapper.style.display = "none";
+        cumImg.style.display = "none";
+        cumPlaceholder.style.display = "flex";
+        cumPlaceholder.textContent = "Not available";
     }
 }
 
@@ -1490,7 +1440,7 @@ async function runBacktest() {
             // Pass chart images from charts object (Day 3.9+)
             const charts = json.charts || {};
             updateDrawdownTab(json.drawdown_curve, charts.drawdown_curve_base64);
-            updatePortfolioTab(json.portfolio_curve, charts.portfolio_plot_base64);
+            updatePortfolioTab(json.portfolio_curve, charts.portfolio_plot_base64, charts.cumulative_return_base64);
             updateTradesTab(json.trades);
 
             // Reset to stats tab

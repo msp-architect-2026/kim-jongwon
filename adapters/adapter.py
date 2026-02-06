@@ -567,3 +567,87 @@ def render_portfolio_plot(
     finally:
         if fig:
             plt.close(fig)
+
+
+def render_cumulative_return_chart(
+    equity_curve: List[Dict[str, Any]]
+) -> Optional[str]:
+    """
+    Render cumulative return (%) over time as a line chart.
+
+    Definition:
+        E0 = first equity value
+        cum_return_pct(t) = (E(t) / E0 - 1) * 100
+
+    Args:
+        equity_curve: List of {"date": str, "equity": float}
+
+    Returns:
+        Base64 encoded PNG string with data URI prefix, or None on failure.
+
+    Note:
+        Uses Matplotlib Agg backend. Figure is closed after rendering.
+    """
+    if not equity_curve:
+        logger.warning("render_cumulative_return_chart received empty equity_curve")
+        return None
+
+    fig = None
+    try:
+        dates = [point["date"] for point in equity_curve]
+        equities = [point["equity"] for point in equity_curve]
+
+        e0 = equities[0]
+        if e0 == 0:
+            logger.warning("render_cumulative_return_chart: initial equity is 0")
+            return None
+
+        cum_returns = [((e / e0) - 1) * 100 for e in equities]
+
+        fig, ax = plt.subplots(figsize=(12, 4))
+
+        # Line chart
+        ax.plot(range(len(dates)), cum_returns, color='#51cf66', linewidth=1.5)
+
+        # Zero reference line
+        ax.axhline(y=0, color='#666666', linestyle='--', linewidth=0.8)
+
+        # Styling (Bloomberg dark theme)
+        ax.set_facecolor('#0a0a0a')
+        fig.patch.set_facecolor('#0a0a0a')
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['bottom'].set_color('#333333')
+        ax.spines['left'].set_color('#333333')
+        ax.tick_params(colors='#888888', labelsize=9)
+        ax.set_ylabel('Cumulative Return (%)', color='#888888', fontsize=10)
+        ax.set_title('Cumulative Return Over Time', color='#ff9900', fontsize=12,
+                     fontfamily='monospace', loc='left', pad=10)
+
+        # X-axis labels (sample to avoid crowding)
+        n_labels = min(10, len(dates))
+        step = max(1, len(dates) // n_labels)
+        ax.set_xticks(range(0, len(dates), step))
+        ax.set_xticklabels(
+            [dates[i] for i in range(0, len(dates), step)],
+            rotation=45, ha='right', fontsize=8
+        )
+
+        # Grid
+        ax.grid(True, alpha=0.15, color='#1e1e1e', linewidth=0.5)
+
+        plt.tight_layout()
+
+        buf = io.BytesIO()
+        fig.savefig(buf, format='png', dpi=100, facecolor=fig.get_facecolor())
+        buf.seek(0)
+
+        b64 = base64.b64encode(buf.getvalue()).decode('utf-8')
+        return f"data:image/png;base64,{b64}"
+
+    except Exception as e:
+        logger.warning(f"render_cumulative_return_chart failed: {e}")
+        return None
+    finally:
+        if fig:
+            plt.close(fig)

@@ -29,6 +29,7 @@ from adapters.adapter import (
     build_equity_curve,
     render_drawdown_chart,
     render_portfolio_plot,
+    render_cumulative_return_chart,
 )
 
 
@@ -1281,7 +1282,7 @@ class TestChartsObject:
     """Test charts object in API response (Day 3.9+ drawdown/portfolio charts)."""
 
     def test_success_response_has_charts_object(self, client):
-        """Success response must include charts object."""
+        """Success response must include charts object with all required keys."""
         payload = {
             "ticker": "AAPL.csv",
             "strategy": "RSI",
@@ -1301,10 +1302,12 @@ class TestChartsObject:
         # Charts object must always exist
         assert "charts" in data, "Response must include 'charts' object"
 
+        # Required chart keys (subset check, not exact count)
+        required_chart_keys = {"drawdown_curve_base64", "portfolio_plot_base64", "cumulative_return_base64"}
         if data["status"] == "completed":
             charts = data["charts"]
-            assert "drawdown_curve_base64" in charts
-            assert "portfolio_plot_base64" in charts
+            assert required_chart_keys.issubset(set(charts.keys())), \
+                f"Charts object missing required keys. Expected at least {required_chart_keys}, got {set(charts.keys())}"
 
     def test_success_charts_have_base64_content(self, client):
         """On success, charts should contain Base64 PNG data."""
@@ -1339,6 +1342,12 @@ class TestChartsObject:
             assert pf_chart.startswith("data:image/png;base64,"), \
                 "portfolio_plot_base64 should be a Base64 PNG data URI"
 
+            # Cumulative return chart should be non-empty Base64
+            cr_chart = charts.get("cumulative_return_base64")
+            assert cr_chart is not None, "cumulative_return_base64 should not be None on success"
+            assert cr_chart.startswith("data:image/png;base64,"), \
+                "cumulative_return_base64 should be a Base64 PNG data URI"
+
     def test_400_error_has_charts_null(self, client):
         """Error response (400) must have charts with null values."""
         payload = {
@@ -1361,6 +1370,7 @@ class TestChartsObject:
         charts = data["charts"]
         assert charts["drawdown_curve_base64"] is None
         assert charts["portfolio_plot_base64"] is None
+        assert charts["cumulative_return_base64"] is None
 
     def test_500_error_has_charts_null(self, client):
         """Error response (500) must have charts with null values."""
@@ -1386,6 +1396,7 @@ class TestChartsObject:
         charts = data["charts"]
         assert charts["drawdown_curve_base64"] is None
         assert charts["portfolio_plot_base64"] is None
+        assert charts["cumulative_return_base64"] is None
 
 
 class TestRenderDrawdownChart:
@@ -1465,6 +1476,41 @@ class TestRenderPortfolioPlot:
         # Verify Base64 content is non-empty
         b64_content = result.replace("data:image/png;base64,", "")
         assert len(b64_content) > 100, "Base64 content should be substantial"
+
+
+class TestRenderCumulativeReturnChart:
+    """Test render_cumulative_return_chart adapter function."""
+
+    def test_empty_curve_returns_none(self):
+        """Empty equity curve returns None."""
+        result = render_cumulative_return_chart([])
+        assert result is None
+
+    def test_valid_curve_returns_base64(self):
+        """Valid equity curve returns Base64 PNG cumulative return chart."""
+        curve = [
+            {"date": "2020-01-01", "equity": 100000},
+            {"date": "2020-01-02", "equity": 101000},
+            {"date": "2020-01-03", "equity": 99000},
+            {"date": "2020-01-04", "equity": 102000},
+            {"date": "2020-01-05", "equity": 103000},
+        ]
+
+        result = render_cumulative_return_chart(curve)
+        assert result is not None
+        assert result.startswith("data:image/png;base64,")
+        b64_content = result.replace("data:image/png;base64,", "")
+        assert len(b64_content) > 100, "Base64 content should be substantial"
+
+    def test_zero_initial_equity_returns_none(self):
+        """Zero initial equity returns None (avoids division by zero)."""
+        curve = [
+            {"date": "2020-01-01", "equity": 0},
+            {"date": "2020-01-02", "equity": 100},
+        ]
+
+        result = render_cumulative_return_chart(curve)
+        assert result is None
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1623,6 +1669,16 @@ class TestDeterministicSuccessPath:
         pf_b64_content = pf_chart.replace("data:image/png;base64,", "")
         assert len(pf_b64_content) > 100, \
             f"portfolio_plot_base64 content too short: {len(pf_b64_content)} chars"
+
+        # Cumulative return chart
+        cr_chart = charts.get("cumulative_return_base64")
+        assert cr_chart is not None, "cumulative_return_base64 must not be None"
+        assert isinstance(cr_chart, str), "cumulative_return_base64 must be a string"
+        assert cr_chart.startswith("data:image/png;base64,"), \
+            f"cumulative_return_base64 must start with 'data:image/png;base64,', got: {cr_chart[:50]}"
+        cr_b64_content = cr_chart.replace("data:image/png;base64,", "")
+        assert len(cr_b64_content) > 100, \
+            f"cumulative_return_base64 content too short: {len(cr_b64_content)} chars"
 
     def test_trades_normalized_on_deterministic_success(self, client, deterministic_backtest_patches):
         """Trades are properly normalized and num_trades matches array length."""
@@ -1858,12 +1914,49 @@ class TestFigureLeakPrevention:
         assert after_fignums == before_fignums, \
             f"Figures leaked on empty input: {after_fignums - before_fignums}"
 
+    def test_render_cumulative_return_chart_closes_figure(self):
+        """render_cumulative_return_chart leaves no open figures after execution."""
+        equity_curve = [
+            {"date": "2020-01-01", "equity": 100000},
+            {"date": "2020-01-02", "equity": 101000},
+            {"date": "2020-01-03", "equity": 99000},
+            {"date": "2020-01-04", "equity": 102000},
+            {"date": "2020-01-05", "equity": 103000},
+        ]
+
+        before_fignums = set(plt.get_fignums())
+        result = render_cumulative_return_chart(equity_curve)
+        after_fignums = set(plt.get_fignums())
+
+        assert result is not None
+        assert result.startswith("data:image/png;base64,")
+
+        new_figures = after_fignums - before_fignums
+        assert new_figures == set(), \
+            f"render_cumulative_return_chart left open figures: {new_figures}"
+
+    def test_render_cumulative_return_chart_closes_figure_on_empty(self):
+        """render_cumulative_return_chart handles empty input without leaking."""
+        before_fignums = set(plt.get_fignums())
+        result = render_cumulative_return_chart([])
+        after_fignums = set(plt.get_fignums())
+
+        assert result is None
+        assert after_fignums == before_fignums, \
+            f"Figures leaked on empty input: {after_fignums - before_fignums}"
+
     def test_consecutive_renders_do_not_accumulate_figures(self):
         """Multiple consecutive renders do not accumulate open figures."""
         drawdown_curve = [
             {"date": "2020-01-01", "drawdown_pct": 0.0},
             {"date": "2020-01-02", "drawdown_pct": -5.0},
             {"date": "2020-01-03", "drawdown_pct": 0.0},
+        ]
+
+        equity_curve = [
+            {"date": "2020-01-01", "equity": 100000},
+            {"date": "2020-01-02", "equity": 101000},
+            {"date": "2020-01-03", "equity": 102000},
         ]
 
         price_df = pd.DataFrame({
@@ -1875,10 +1968,11 @@ class TestFigureLeakPrevention:
 
         before_fignums = set(plt.get_fignums())
 
-        # Call multiple times
+        # Call multiple times (including cumulative return)
         for _ in range(5):
             render_drawdown_chart(drawdown_curve)
             render_portfolio_plot(price_df, trades)
+            render_cumulative_return_chart(equity_curve)
 
         after_fignums = set(plt.get_fignums())
 

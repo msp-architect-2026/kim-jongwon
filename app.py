@@ -37,6 +37,7 @@ from adapters.adapter import (
     normalize_trades,
     render_drawdown_chart,
     render_portfolio_plot,
+    render_cumulative_return_chart,
 )
 
 app = Flask(__name__)
@@ -143,7 +144,8 @@ def _build_error_response(run_id, message, status_code=400):
         # Day 3.9+ charts object (additive)
         "charts": {
             "drawdown_curve_base64": None,
-            "portfolio_plot_base64": None
+            "portfolio_plot_base64": None,
+            "cumulative_return_base64": None
         }
     }), status_code
 
@@ -442,6 +444,9 @@ def run_backtest():
         # Render portfolio plot (orders + trade PnL)
         portfolio_plot_b64 = render_portfolio_plot(price_df_for_plot, trades)
 
+        # Render cumulative return chart (Day 3.9+)
+        cumulative_return_b64 = render_cumulative_return_chart(equity_curve)
+
         # --- Build response using extended schema ---
         # FIX #3: num_trades = len(trades) (paired trades count, not raw actions)
         response = {
@@ -482,7 +487,8 @@ def run_backtest():
             # Day 3.9+ charts object (additive)
             "charts": {
                 "drawdown_curve_base64": drawdown_chart_b64,
-                "portfolio_plot_base64": portfolio_plot_b64
+                "portfolio_plot_base64": portfolio_plot_b64,
+                "cumulative_return_base64": cumulative_return_b64
             }
         }
 
