@@ -1,6 +1,6 @@
 # Technical Retrospective & Architecture Overview
 
-> Day 1 ~ Day 3.8 구현 기반. 실제 코드베이스에서 확인 가능한 설계 결정만 기술.
+> Day 1 ~ Day 3.9 구현 기반. 실제 코드베이스에서 확인 가능한 설계 결정만 기술.
 
 ---
 
@@ -23,9 +23,10 @@
 
 | 계층 | 책임 | 파일 |
 |------|------|------|
-| **Controller** | Input validation, date filtering, indicator 계산, chart 렌더링, HTTP 응답 | `app.py` |
+| **Controller** | Input validation, date filtering, indicator 계산, HTTP 응답 | `app.py` |
 | **Rule Layer** | 전략 로직 (evaluate → Signal) | `rules/technical_rules.py` |
-| **Adapter** | Rule.evaluate() → engine-compatible callable 변환 | `app.py:_build_strategy()` |
+| **Strategy Adapter** | Rule.evaluate() → engine-compatible callable 변환 | `app.py:_build_strategy()` |
+| **Response Adapter** | 엔진 출력 → UI-ready 데이터 변환, 차트 렌더링 | `adapters/adapter.py` |
 | **Engine** | 순수 시뮬레이션 (buy/sell 실행, portfolio 추적, report 생성) | `backtest/engine.py` |
 
 `app.py` 첫 줄 docstring이 `"Controller layer only -- does NOT modify engine logic."` 인 이유는 이 원칙을 코드 레벨에서 선언하기 위함.
@@ -230,9 +231,99 @@
 
 ---
 
-## 3. Interview Q&A Preparation
+## 3. Day 3.9 — Adapter Layer & Advanced Visualization
 
-### Q1: "매 요청마다 CSV를 읽는 건 비효율적이지 않나요? Caching은 왜 안 했나요?"
+### 3.1 Adapter Layer 도입 (`adapters/adapter.py`)
+
+**핵심 결정: 엔진 출력 → UI-ready 데이터 변환을 독립 모듈로 분리**
+
+Day 3까지는 `app.py` Controller 안에서 차트 렌더링과 데이터 변환이 섞여 있었음.
+Day 3.9에서 `adapters/adapter.py`를 분리하여 **단일 책임 원칙(SRP)** 적용:
+
+| 함수 | 책임 | 입력 → 출력 |
+|------|------|-------------|
+| `build_equity_curve()` | 엔진 결과 → equity time-series | engine dict → `[{date, equity}]` |
+| `derive_drawdown_curve()` | equity → drawdown 계산 | equity_curve → `[{date, drawdown_pct}]` |
+| `derive_portfolio_curve()` | equity + trades → 현금/포지션 분리 | equity + trades → `[{date, cash, position, total}]` |
+| `normalize_trades()` | 엔진 trades → 표준 스키마 | raw trades → ISO8601 timestamps, fee 계산 |
+| `render_orders_chart()` | Close 가격 + BUY/SELL 마커 | price_df + trades → Base64 PNG |
+| `render_trade_pnl_chart()` | 거래별 손익 scatter | price_df + trades → Base64 PNG |
+| `render_cumulative_return_chart()` | 누적 수익률 line chart | equity_curve → Base64 PNG |
+| `render_drawdown_chart()` | Drawdown time-series chart | drawdown_curve → Base64 PNG |
+
+**Rule 1 준수:** 모든 함수는 엔진 출력(equity, trades)만을 입력으로 사용.
+엔진 내부 로직을 수정하거나 시그널 생성을 변경하지 않음.
+
+---
+
+### 3.2 Portfolio 시각화 리팩토링
+
+**핵심 결정: 2-row subplot → 독립 차트 3개로 분리**
+
+초기 구현은 `render_portfolio_plot()`이 Orders + Trade PnL을 하나의 2-row subplot으로 렌더링:
+- 문제: 각 차트의 높이가 반으로 줄어 가독성 저하, 범례 위치 일관성 없음
+- 해결: 세 개의 독립 함수로 분리 → 각각 `figsize=(12, 5)` 전체 너비 사용
+
+| 변경 전 | 변경 후 |
+|---------|---------|
+| `portfolio_plot_base64` (2-row combined) | `portfolio_orders_base64` (독립) |
+| ↑ 동일 키에 포함 | `trade_pnl_base64` (독립) |
+| 별도 | `cumulative_return_base64` (독립) |
+
+**API 계약 영향:**
+- `portfolio_plot_base64` 키 **완전 삭제** (deprecated)
+- `charts` 객체에 4개 키로 정규화: `drawdown_curve_base64`, `portfolio_orders_base64`, `trade_pnl_base64`, `cumulative_return_base64`
+- 에러 응답에서도 동일 키를 `null`로 반환 → 프론트엔드 null-check 일관성
+
+---
+
+### 3.3 차트 렌더링 안전성 (Figure Leak Prevention)
+
+**핵심 결정: 모든 render 함수에 `fig = None` + `try/except/finally` 패턴 적용**
+
+```python
+fig = None
+try:
+    fig, ax = plt.subplots(figsize=(12, 5))
+    # ... render ...
+    return f"data:image/png;base64,{b64}"
+except Exception as e:
+    logger.warning(f"render failed: {e}")
+    return None
+finally:
+    if fig:
+        plt.close(fig)
+```
+
+**테스트 검증 (83 tests, 0 warnings):**
+- `plt.get_fignums()` 비교로 figure 누수 감지
+- 빈 입력, 정상 입력, 연속 호출(5회 × 4함수) 모두 검증
+- 빈 trades 리스트에서 `ax.legend()` 호출 시 `UserWarning` 발생 → 조건부 legend로 해결
+
+---
+
+### 3.4 VectorBT-Style 5-Tab Dashboard
+
+**핵심 결정: 정보 밀도를 높이되, 인지 부하를 탭으로 분리**
+
+| Tab | 데이터 소스 | 렌더링 방식 |
+|-----|-------------|-------------|
+| Stats | `metrics` (JSON) | KPI cards (client-side) |
+| Equity | `chart_base64` (legacy) | Server-rendered PNG |
+| Drawdown | `drawdown_curve` + `charts.drawdown_curve_base64` | Server-rendered PNG |
+| Portfolio | `charts.portfolio_orders_base64` + `trade_pnl_base64` + `cumulative_return_base64` | Server-rendered PNG × 3 |
+| Trades | `trades` (JSON array) | Client-side HTML table |
+
+**Bloomberg Terminal 미학:**
+- 배경: `#0a0a0a`, 텍스트: `#e0e0e0`, 강조: `#ff9900` (amber)
+- 모노스페이스 숫자, 14px 최소 폰트
+- 차트 스타일: dark facecolor, minimal spines, 0.15 alpha grid
+
+---
+
+## 4. Interview Q&A Preparation
+
+### Q1 (Day 3): "매 요청마다 CSV를 읽는 건 비효율적이지 않나요? Caching은 왜 안 했나요?"
 
 **Answer:**
 
@@ -251,7 +342,7 @@
 
 ---
 
-### Q2: "RDB에 JSON 컬럼을 쓰면 정규화 원칙에 어긋나는 거 아닌가요?"
+### Q2 (Day 3): "RDB에 JSON 컬럼을 쓰면 정규화 원칙에 어긋나는 거 아닌가요?"
 
 **Answer:**
 
@@ -271,7 +362,7 @@
 
 ---
 
-### Q3: "Flask에서 Circular Import를 어떻게 방지했나요?"
+### Q3 (Day 3): "Flask에서 Circular Import를 어떻게 방지했나요?"
 
 **Answer:**
 
@@ -296,3 +387,45 @@
 **이 패턴이 Application Factory와 호환되는 이유:**
 - 향후 `create_app()` 팩토리 함수로 전환할 때, `db.init_app(app)` 호출 위치만 변경하면 됨
 - `extensions.py`와 `models.py`는 **변경 없이** 재사용 가능
+
+---
+
+### Q4 (Day 3.9): "Adapter 모듈을 왜 별도 디렉터리로 분리했나요? app.py에 두면 안 되나요?"
+
+**Answer:**
+
+가능은 합니다. 하지만 의도적으로 분리한 이유가 있습니다.
+
+**분리 이유:**
+- `app.py`는 이미 Flask 라우팅, 입력 검증, 에러 핸들링, DB 세션 관리를 담당 — 약 570줄
+- Adapter 함수들(equity curve 빌드, drawdown 계산, 4개 차트 렌더링)만 **715줄**
+- 합치면 1,280줄의 단일 파일 → **가독성과 테스트 격리 모두 악화**
+
+**테스트 격리 이점:**
+- `adapters/adapter.py`의 함수들은 **Flask app context 없이** 단위 테스트 가능
+- `render_orders_chart(price_df, trades)` — 순수 함수, HTTP 요청과 무관
+- `app.py`의 라우트 테스트는 Flask test client 필요 → 느리고 복잡
+- 분리 덕분에 83개 테스트 중 adapter 테스트가 **app context 없이 빠르게 실행**
+
+**Day 5+ 확장성:**
+- K8s Worker(`worker.py`)도 동일한 adapter 함수를 재사용 가능
+- Controller가 바뀌어도(Flask → FastAPI 등) adapter는 그대로
+
+---
+
+### Q5 (Day 3.9): "차트를 서버에서 렌더링하는 이유는? 클라이언트 측 Chart.js가 더 효율적이지 않나요?"
+
+**Answer:**
+
+맞습니다, 일반적으로는 클라이언트 렌더링이 서버 부하 측면에서 유리합니다.
+
+**서버 렌더링을 선택한 이유:**
+- 프로젝트 제약: **Jinja2 + Bootstrap 5 only, NO React/Vue/SPA** (CLAUDE.md Rule)
+- Chart.js는 npm 번들링이나 CDN 의존 → 이 프로젝트의 기술 스택 범위 밖
+- Matplotlib Agg는 이미 Python 의존성에 포함, 추가 인프라 불필요
+- K8s Worker에서도 동일한 차트 생성 가능 → **실행 환경 일관성**
+
+**Trade-off 인지:**
+- 서버 CPU 부하: 차트 4개 렌더링 ≈ 200ms (허용 범위)
+- Base64 전송량: 각 PNG 약 20-50KB → 총 80-200KB (API 응답 크기 증가)
+- 대규모 동시 요청 시 서버 부하 → K8s horizontal scaling으로 해결 (Pod replica 증가)
