@@ -208,28 +208,29 @@ Does NOT require engine modification.
 
 ---
 
-#### Tab E: Portfolio Composition
+#### Tab E: Portfolio (Orders / Trade PnL / Cumulative Return)
 
-Visualizes cash vs. position value over time.
+Three separate full-width server-rendered charts generated in the **Adapter layer**.
 
-**Data Contract (Optional / Derivable):**
-```json
-"portfolio_curve": [
-  {
-    "date": "2020-01-01",
-    "cash": 90000,
-    "position": 10000,
-    "total": 100000
-  }
-]
-```
+**Chart 1 — Orders (Buy / Sell)**
+- Close price line with BUY (green ▲) and SELL (red ▼) markers
+- Rendered by `render_orders_chart()` → `portfolio_orders_base64`
 
-**Derivation Source:**
-- `equity_curve` (total value)
+**Chart 2 — Trade PnL (%)**
+- Scatter plot: Profit (green ●) / Loss (red ●) with zero reference line
+- Conditional legend (only shown when data points exist)
+- Rendered by `render_trade_pnl_chart()` → `trade_pnl_base64`
+
+**Chart 3 — Cumulative Return (%)**
+- Line chart derived from `equity_curve`
+- Rendered by `render_cumulative_return_chart()` → `cumulative_return_base64`
+
+**Data Sources (all derivable, no engine modification):**
+- `equity_curve` (total value time-series)
 - `trades` (executed buy/sell actions)
-- Cash flow implied by position sizing
+- Price DataFrame from data loader
 
-This is computed in the **Adapter layer**, NOT the engine.
+All charts use the Adapter pattern (Rule 1) and follow Rule 5 (Agg backend, `plt.close(fig)`).
 
 ---
 
@@ -422,6 +423,14 @@ Web(Controller)과 Worker(Job) 간 JSON Schema는 **한번 정의되면 동결**
     }
   ],
 
+  // Server-rendered charts (Base64 PNG, Day 3.9+)
+  "charts": {
+    "drawdown_curve_base64": "data:image/png;base64,...",
+    "portfolio_orders_base64": "data:image/png;base64,...",
+    "trade_pnl_base64": "data:image/png;base64,...",
+    "cumulative_return_base64": "data:image/png;base64,..."
+  },
+
   // Phase 2 (candlestick tab)
   "price_candles": [
     { "date": "2020-01-01", "open": 150.0, "high": 153.5, "low": 149.2, "close": 152.8, "volume": 1234567 }
@@ -431,7 +440,7 @@ Web(Controller)과 Worker(Job) 간 JSON Schema는 **한번 정의되면 동결**
     { "date": "2020-01-15", "action": "BUY", "price": 153.17 }
   ],
 
-  // Legacy (still supported)
+  // Legacy (equity curve chart, still supported)
   "chart_base64": "data:image/png;base64,..."
 }
 ```
@@ -592,6 +601,14 @@ stock_backtest/
 |   |-- logger_config.py               # 로깅 설정 (file + console)
 |   |-- qa_prices.py                   # 데이터 품질 검증
 |   +-- verify_mvp.py                  # E2E 파이프라인 검증 스크립트
+|
+|-- adapters/                          # ✅ Adapter Layer (post-processing, Rule 1 compliant)
+|   |-- __init__.py
+|   +-- adapter.py                     # build_equity_curve, derive_drawdown_curve, normalize_trades, render_*_chart
+|
+|-- tests/                             # ✅ Test Suite
+|   |-- __init__.py
+|   +-- test_day39.py                  # 83 tests: adapter, Flask endpoints, schema, figure leak prevention
 |
 |-- templates/
 |   +-- index.html                     # ✅ Bootstrap 5 Dark Mode 대시보드
