@@ -11,6 +11,22 @@ persisted via SQLAlchemy ORM (SQLite for local development, MySQL for production
 The backtest engine is treated as **immutable legacy code** — all new functionality is added
 through wrapper/adapter patterns without modifying core engine logic.
 
+## Architecture & Invariants
+
+**`CLAUDE.md` is the single source of truth for all engineering and architecture decisions.**
+
+The following invariants have been finalized and are enforced across all phases (1–6):
+
+| Decision | Detail |
+|---|---|
+| **Container Registry** | GHCR (`ghcr.io/<owner>/stock-backtest`). Immutable tags only — Git SHA or semantic version. No `latest` in production (Rule 10). |
+| **RBAC** | Web ServiceAccount uses least privilege: namespace-scoped Role/RoleBinding granting `create`, `get`, `list`, `delete` on the `jobs` resource in the `batch` API group (`batch/v1`). No ClusterRole. |
+| **Job Lifecycle** | Successful Jobs are deleted immediately by the Web application after result persistence. Failed Jobs are retained for 24 hours via `ttlSecondsAfterFinished: 86400` for debugging. |
+| **Secrets** | Only `k8s/secret-template.yaml` is committed. Real secrets are injected via CI/CD pipeline variables or Sealed Secrets. Committing `k8s/secret.yaml` with real values is strictly forbidden. |
+| **DB Schema Init** | No automatic `db.create_all()` in production. Schema initialization is an operator-invoked, one-time procedure (via `kubectl exec` or init Job). |
+
+> **Contributors:** Please read `CLAUDE.md` before submitting PRs.
+
 ## Key Features (Day 3.9)
 
 - **Engine Immutability**: Core backtest engine (`backtest/engine.py`) is never modified. All extensions use wrapper patterns.

@@ -16,22 +16,26 @@
 | **Scalability** | 각 백테스트는 독립적인 K8s Job으로 실행. 수평 확장은 인프라 레벨에서 해결 |
 | **Stateless Design** | Web 계층은 로컬 파일시스템에 의존하지 않음. 결과는 DB 또는 Base64 인라인 반환 |
 | **Reproducibility** | 동일 입력(ticker, rule, params, date range)은 반드시 동일 출력 생성 |
-| **GitOps** | 모든 K8s 매니페스트는 `k8s/` 디렉터리에 존재. 레포가 인프라의 단일 진실 공급원 |
+| **GitOps** | 모든 K8s 매니페스트는 `k8s/` 디렉터리에 존재. 레포가 인프라의 단일 진실 공급원. Argo CD가 클러스터 상태를 레포에서 reconcile (Git = Source of Truth) |
 
 ---
 
 ## 2. Project Status
 
-**Current Phase:** Day 4 (2026-02-07) — Ready for Dockerization & Kubernetes
+**Current Phase:** Phase-based planning 기준 (2026-02-07), **13 days remaining** (~ 2026-02-19)
+— Phases 1-3 cover core platform; Phases 4-6 cover automation, observability, and polish.
 
 | Phase | Status | Scope |
 |---|---|---|
 | Day 1-2 | **✅ Completed** | Core engine verification, rules library, technical indicators, MVP pipeline |
 | Day 3 | **✅ Completed** | Flask app structure (MVC), immutable engine integration, strategy persistence (SQLite + SQLAlchemy), core web routes & API contracts (`/run_backtest`, `/api/strategies`, `/health`) |
 | Day 3.9 | **✅ Completed** | Advanced UI: VectorBT-style 5-tab dashboard, extended JSON schemas, adapter-layer metrics, portfolio visualization refactor (separate Orders & Trade PnL charts), cumulative return chart |
-| Day 4 | **📋 Planned** | Dockerization (`Dockerfile`, `docker-compose.yml`, `.env.example`, health check) |
-| Day 5 | **📋 Planned** | Kubernetes + MySQL (StatefulSet, Deployment, ConfigMap, Secret) |
-| Day 6 | **📋 Planned** | Web → K8s Job integration (worker entrypoint, job launcher, status polling) |
+| Phase 1 | **📋 Planned** | Containerization & Local Parity (Docker, Compose, .env.example, healthcheck) |
+| Phase 2 | **📋 Planned** | Kubernetes Runtime + Data Layer (Namespace, Deployment, MySQL StatefulSet, ConfigMap/Secret, Ingress) |
+| Phase 3 | **📋 Planned** | Web → K8s Job Orchestration (worker entrypoint, job launcher, status polling, DB persistence) |
+| Phase 4 | **📋 Planned** | Automation & GitOps (CI via GitHub Actions, CD via Argo CD) |
+| Phase 5 | **📋 Planned** | Observability verification (Rule 8) & Demo Assets |
+| Phase 6 | **📋 Planned** | Documentation & Retrospective (architecture diagrams, ops guide, final polish) |
 
 **Implemented APIs:**
 
@@ -43,6 +47,7 @@
 | `POST` | `/api/strategies` | ✅ Implemented |
 | `DELETE` | `/api/strategies/<id>` | ✅ Implemented |
 | `GET` | `/health` | ✅ Implemented |
+| `GET` | `/status/<run_id>` | 📋 Phase 3 |
 
 ---
 
@@ -58,8 +63,73 @@
 | Data Processing | Pandas, NumPy | 기존 사용 중 |
 | Visualization | Matplotlib (**Agg** backend) | 서버 환경 필수; GUI 의존성 없음 |
 | Containerization | Docker | Multi-stage build |
+| Container Registry | GHCR | `ghcr.io/<owner>/stock-backtest`; `imagePullSecrets` required if private |
 | Orchestration | Kubernetes | Job(Worker), Deployment(Web), Service |
 | Database | MySQL 8.0 | K8s StatefulSet + PVC |
+| CI | GitHub Actions | Test → Build → Push (immutable image tags) |
+| CD | Argo CD | Git-driven cluster reconciliation. GitLab CI/CD는 대안으로 허용 (아래 참고) |
+
+**CI/CD Alternative:**
+GitHub Actions + Argo CD가 기본 선택. GitLab CI/CD + GitLab Runner 조합도 대안으로 허용하되,
+선택 시 `.gitlab-ci.yml`을 레포 루트에 배치하고 동일한 test → build → push → deploy 파이프라인을 유지할 것.
+
+---
+
+### Web vs Worker Responsibility Boundary
+
+Phase 3에서 Web↔Worker 분리가 도입되면 아래 책임 분리를 따른다.
+
+| Responsibility | Web (Flask Deployment) | Worker (K8s Job) |
+|---|---|---|
+| Request validation, input sanitization | ✅ | — |
+| `run_id` issuance (UUID4) | ✅ | — |
+| K8s Job 생성 (K8s Python client) | ✅ | — |
+| Backtest engine 실행 | — | ✅ |
+| Adapter-derived outputs (charts, metrics) | — | ✅ |
+| Result persistence → MySQL | — | ✅ |
+| Status/result 조회 (`/status/<run_id>`) | ✅ | — |
+| Response rendering (JSON/HTML) | ✅ | — |
+
+**Invariants:**
+- **Web은 stateless** (Rule 4). 로컬 파일 I/O 없음. 수평 확장에 코드 변경 불필요.
+- **Worker는 ephemeral**. 단일 백테스트 실행 후 종료. 재시도는 K8s `backoffLimit`로 관리.
+- **MySQL이 결과의 source of truth**. Web과 Worker 모두 MySQL을 통해서만 결과를 교환.
+- **Web Pod의 ServiceAccount:** `k8s/rbac.yaml`는 namespace-scoped Role/RoleBinding으로 정의되며, `batch` API group (`batch/v1`)의 `jobs` 리소스에 대해서만 `create`, `get`, `list`, `delete` 권한을 부여한다. ClusterRole은 사용하지 않는다.
+- **JobLauncher 추상화:** Web은 `JobLauncher` 인터페이스를 통해 백테스트를 실행. Local/Dev 모드에서는 subprocess 기반 mock, K8s 모드에서는 `kubernetes.client.BatchV1Api`를 사용. 환경변수(`JOB_LAUNCHER_MODE`)로 전환.
+
+---
+
+### GitOps Deployment Flow (CI vs CD)
+
+```
+Developer → git push → GitHub Actions (CI)
+  1. pytest                                    ← test
+  2. docker build + push :${GIT_SHA_SHORT}     ← build
+  3. Update image tag in k8s/web-deployment.yaml → commit & push  ← promote
+                        ↓
+Argo CD (CD) watches k8s/ directory on main branch
+  4. Detects manifest change → auto-sync
+  5. Rolling update → new Pods with :${GIT_SHA_SHORT} image
+```
+
+**CI responsibility (GitHub Actions):**
+- Test, build, push image with immutable `:<git-sha-short>` tag (Rule 10)
+- Update `k8s/web-deployment.yaml` image field with new tag (via `sed` or `yq` in CI step)
+- Commit the manifest change to the repo (direct push to `main`, or PR for review)
+
+**CD responsibility (Argo CD):**
+- **Watches:** `k8s/` directory in `main` branch
+- **Sync policy:** auto-sync with self-heal enabled
+- Detects manifest drift → applies to cluster → rolling update
+
+**Image Tag Update Strategy (Default: CI-driven commit):**
+CI 파이프라인이 빌드 성공 후 `k8s/web-deployment.yaml`의 image tag를 새 SHA로 업데이트하고 commit.
+전체 배포 상태가 Git에 남으므로 별도 도구 없이 추적 가능.
+Direct commits to `main` are acceptable only when the branch is protected with required status checks (tests, builds) enforced before merge.
+Optionally, the CI can open a PR for tag promotion and require approval before merge, providing an explicit gate before production deployment.
+
+**Alternative:** Argo CD Image Updater가 컨테이너 레지스트리를 감시하여 자동으로 image tag를 교체할 수 있다.
+CI commit 단계를 제거하지만 Argo CD 확장 의존성이 추가되므로, 규모가 커져 CI commit이 머지 충돌을 유발할 때만 도입할 것.
 
 ---
 
@@ -102,10 +172,10 @@ The backtesting form exposes the following inputs:
 | Ticker | string | "AAPL" | Stock symbol |
 | Start Date | date | - | YYYY-MM-DD format |
 | End Date | date | - | YYYY-MM-DD format |
-| Rule | dropdown | "RSI" | Options: RSI, MACD, RSI+MACD |
+| Rule (`rule_type`) | dropdown | "RSI" | Options: RSI, MACD, RSI+MACD. Maps to `rule_type` in API request |
 | Initial Capital | number | 100000 | Starting portfolio value |
 | Fee Rate | number | 0.001 | Decimal fraction (0.001 = 0.1% per trade) |
-| Slippage | number | 0 | Basis points (not implemented Day 3.9) |
+| Slippage | number | 0 | Basis points (10 bps = 0.10%). Accepted in UI/API; **ignored in Day 3.9 calculations** |
 | Position Size | number | 10000 | Amount per trade |
 | Size Type | dropdown | "value" | Options: "value" (dollars) or "percent" (%) |
 | Direction | dropdown | "longonly" | Options: "longonly" or "longshort" |
@@ -234,9 +304,9 @@ All charts use the Adapter pattern (Rule 1) and follow Rule 5 (Agg backend, `plt
 
 ---
 
-#### Tab F: Candlestick + Signals (Phase 2)
+#### Tab F: Candlestick + Signals (Phase 2+ Only — NOT part of Day 3.9 dashboard)
 
-**Status:** Planned for Day 7+ (not Day 3.9).
+**Status:** Phase 2+ only. Not included in the current five-tab dashboard (Stats, Equity, Drawdown, Portfolio, Trades).
 
 - OHLC candlestick chart with BUY/SELL markers
 - Library: mplfinance (Matplotlib wrapper)
@@ -274,6 +344,11 @@ To avoid ambiguity in design and implementation, the following terms are used co
 Rule logic MUST live in `rules/`.
 Strategy Presets MUST NOT introduce or modify trading behavior.
 
+- **`rule_type` vs `rule_id` (IMPORTANT):**
+  - `rule_type` (e.g., `"RSI"`, `"MACD"`, `"RSI_MACD"`) + `params` dictionary **drives execution logic**.
+  - `rule_id` (e.g., `"RSI_14_30_70"`) is an **optional helper slug** for tracking and logging.
+  - `rule_id` does **NOT** drive execution. If omitted, the system may derive it from `rule_type` + `params`.
+
 
 **Quick Reference:**
 
@@ -288,6 +363,7 @@ Strategy Presets MUST NOT introduce or modify trading behavior.
 | **#7** | 환경변수 설정 | 시크릿 노출 위험 |
 | **#8** | run_id 로깅 | 디버깅 불가 |
 | **#9** | DB Session Safety | 트랜잭션 손상 |
+| **#10** | Immutable Image Tags | 배포 추적 불가 |
 
 ---
 
@@ -331,23 +407,25 @@ re-computation using different formulas is not.
 
 **Principle:**
 > If data can be derived from existing engine outputs (equity, trades),
-> compute it in the adapter. Only modify the engine if **internal loop access**
-> is required (e.g., tracking peak equity during execution).
+> compute it in the adapter. Features requiring internal loop access
+> (e.g., tracking peak equity during execution) are **OUT OF SCOPE**
+> for Phase 1–6 and must be documented as limitations in README.
 
 ### Rule 2 -- Immutable API Contracts
 
-**This is the target Web↔Worker contract, enforced starting Day 5.**
+**This is the target Web↔Worker contract, enforced starting Phase 2.**
 
 Web(Controller)과 Worker(Job) 간 JSON Schema는 **한번 정의되면 동결**.
 기존 필드 삭제/이름 변경 금지. 새 필드 추가 시 기본값 필수.
 ```json
 // Backtest Request (Web -> Worker) - Day 3.9+ Extended
 {
-  // Core fields (existing, unchanged)
+  // Core fields
   "run_id": "uuid",
   "ticker": "AAPL",
-  "rule_id": "RSI_14_30_70",
-  "params": {},
+  "rule_type": "RSI",             // Required: drives execution logic
+  "params": {"period": 14, "oversold": 30, "overbought": 70},
+  "rule_id": "RSI_14_30_70",     // Optional: helper slug for tracking/logging
   "start_date": "2020-01-01",  // YYYY-MM-DD
   "end_date": "2024-01-01",
 
@@ -357,7 +435,7 @@ Web(Controller)과 Worker(Job) 간 JSON Schema는 **한번 정의되면 동결**
   "slippage_bps": 0,           // Default: 0 (not implemented Day 3.9)
   "position_size": 10000,      // Default: 10000
   "size_type": "value",        // Default: "value" | "percent"
-  "direction": "longonly",     // Default: "longonly" | "longshort" 
+  "direction": "longonly",     // Default: "longonly" | "longshort"
   "timeframe": "1d" // Default: "1d" | "5m" | "1h" (Phase 2)
 }
 ```
@@ -465,8 +543,8 @@ Flask 서버는 로컬 파일시스템에 쓰기 금지.
 생성된 아티팩트(차트, 이미지)는 메모리에서 처리하고 Base64로 반환.
 
 **Backtest results storage:**
-- **Day 3-4 (Current):** Results returned inline as Base64-encoded JSON response
-- **Day 5+ (Future):** Results persisted to MySQL; Base64 chart stored in `backtest_results` table
+- **Phase 1 (Current):** Results returned inline as Base64-encoded JSON response
+- **Phase 2+ (Future):** Results persisted to MySQL; Base64 chart stored in `backtest_results` table
 
 Strategy definitions (user-created rules) are stored in SQLite via SQLAlchemy.
 ```python
@@ -481,9 +559,9 @@ fig.savefig("/tmp/chart.png")
 
 **Note on Local SQLite Usage (IMPORTANT):**
 
-- SQLite is used **ONLY for local development (Day 3–4)** to persist UI strategy presets.
+- SQLite is used **ONLY for local development (Phase 1)** to persist UI strategy presets.
 - The SQLite file (`strategies.db`) is **NOT a production dependency** and is **never committed**.
-- Starting Day 5, all persistent state (presets & results) moves to **MySQL via StatefulSet**.
+- Starting Phase 2, all persistent state (presets & results) moves to **MySQL via StatefulSet**.
 - The Web tier remains stateless in production; local SQLite is a **development-only exception**.
 
 
@@ -533,11 +611,21 @@ DB_PASSWORD=changeme
 LOG_LEVEL=INFO
 ```
 
-### Rule 8 -- Observability
+**Secret Commit Policy (GitOps Safety):**
+- `k8s/secret.yaml` with real values MUST **NEVER** be committed to the repository.
+- The repo contains **`k8s/secret-template.yaml`** only (placeholder values).
+- Real secrets are injected via **CI/CD pipeline variables** or **Sealed Secrets** in production.
+- `.gitignore` MUST include `k8s/secret.yaml` to prevent accidental commits.
+
+### Rule 8 -- Observability (Primary Reference)
+
+> **This is the single source of truth for observability requirements.**
+> Phase 5 verifies compliance; it does not redefine the rules below.
+> If any other section appears to conflict with the rules below, Rule 8 takes precedence.
 
 - 모든 백테스트 실행에 `run_id` (UUID4) 부여
-- 모든 로그에 `run_id` 포함
-- K8s 로그 수집을 위해 Stdout/Stderr로만 로깅
+- 모든 로그에 `run_id` 포함 — Web, Worker, DB 전 구간 추적 가능해야 함
+- K8s 로그 수집을 위해 Stdout/Stderr로만 로깅 (파일 로깅 금지)
 ```python
 import uuid
 run_id = str(uuid.uuid4())
@@ -556,6 +644,19 @@ logger.info(f"[run_id={run_id}] Backtest completed: return={result['total_return
 **Git Safety Rule:**
 - `strategies.db` (SQLite file) MUST be listed in `.gitignore` and never committed.
 
+**Production Schema Initialization (Phase 2+):**
+- Production 환경(K8s)에서 `db.create_all()`은 **자동 실행되지 않는다**.
+- 스키마 초기화는 **일회성 운영 절차**로 취급하며, 운영자가 명시적으로 실행한다.
+  - 방법: `kubectl exec` 또는 초기화 전용 K8s Job
+- `db.create_all()`은 **로컬 개발 환경에서만** `if __name__ == "__main__"` 블록 내에서 호출된다.
+- Alembic 등 마이그레이션 도구는 이 MVP 범위에서는 사용하지 않는다. 스키마 변경은 additive only.
+
+### Rule 10 -- Immutable Image Tags
+
+- Docker 이미지 태그는 **Git SHA 또는 semantic version** 사용. `latest` 태그를 production 배포에 사용 금지.
+- CI 파이프라인이 빌드한 이미지는 `ghcr.io/<owner>/stock-backtest:<git-sha-short>` 형식으로 push.
+- 동일 태그로 **이미지 덮어쓰기 금지** — 배포 이력 추적과 롤백을 보장.
+
 
 ---
 
@@ -570,12 +671,17 @@ stock_backtest/
 |-- .gitignore                         # Git 제외 규칙
 |-- test_structure.py                  # 구조 검증 테스트
 |-- app.py                             # ✅ Flask 애플리케이션 진입점 (Controller)
+|-- worker.py                          # [Phase 3] K8s Job Worker 진입점
 |-- extensions.py                      # ✅ SQLAlchemy 인스턴스 (순환 import 방지)
 |-- models.py                          # ✅ Strategy ORM 모델
-|-- Dockerfile                         # [Day 4] Multi-stage Docker 빌드
-|-- docker-compose.yml                 # [Day 4] 로컬 개발: app + MySQL
-|-- .env.example                       # [Day 4] 환경변수 템플릿
-|-- .dockerignore                      # [Day 4] data/, logs/, __pycache__/ 제외
+|-- Dockerfile                         # [Phase 1] Multi-stage Docker 빌드
+|-- docker-compose.yml                 # [Phase 1] 로컬 개발: app + MySQL
+|-- .env.example                       # [Phase 1] 환경변수 템플릿
+|-- .dockerignore                      # [Phase 1] __pycache__/, *.pyc, .git/, .env, strategies.db 제외 (data/ is included for reproducibility)
+|
+|-- .github/                           # [Phase 4] CI/CD
+|   +-- workflows/
+|       +-- ci.yml                     # Test → Build → Push (GitHub Actions)
 |
 |-- backtest/                          # 핵심 엔진 (IMMUTABLE)
 |   |-- __init__.py
@@ -598,9 +704,10 @@ stock_backtest/
 |-- scripts/
 |   |-- config.py                      # 환경변수 기반 설정 (Config 클래스)
 |   |-- data_loader.py                 # yfinance 다운로드 + 검증
-|   |-- logger_config.py               # 로깅 설정 (file + console)
+|   |-- logger_config.py               # 로깅 설정 (stdout/stderr structured logging; K8s-friendly, Rule 8 compliant)
 |   |-- qa_prices.py                   # 데이터 품질 검증
-|   +-- verify_mvp.py                  # E2E 파이프라인 검증 스크립트
+|   |-- verify_mvp.py                  # E2E 파이프라인 검증 스크립트
+|   +-- demo.sh                        # [Phase 5] 고정 시나리오 E2E 데모 스크립트
 |
 |-- adapters/                          # ✅ Adapter Layer (post-processing, Rule 1 compliant)
 |   |-- __init__.py
@@ -613,14 +720,19 @@ stock_backtest/
 |-- templates/
 |   +-- index.html                     # ✅ Bootstrap 5 Dark Mode 대시보드
 |
-|-- k8s/                               # [Day 5-6] Kubernetes 매니페스트
+|-- k8s/                               # [Phase 2-3] Kubernetes 매니페스트
 |   |-- namespace.yaml
 |   |-- configmap.yaml
-|   |-- secret.yaml
+|   |-- secret-template.yaml           # Template only; real secrets via CI/CD or Sealed Secrets
 |   |-- web-deployment.yaml
 |   |-- worker-job-template.yaml
 |   |-- mysql-statefulset.yaml
+|   |-- rbac.yaml                      # ServiceAccount + Role + RoleBinding (namespace-scoped, jobs.batch only)
 |   +-- ingress.yaml
+|
+|-- docs/                              # [Phase 6] 프로젝트 문서
+|   |-- architecture.md                # 아키텍처 다이어그램 (Mermaid)
+|   +-- ops-guide.md                   # 운영 가이드 (배포, 롤백, 트러블슈팅)
 |
 |-- data/                              # OHLCV CSV 데이터 (AAPL.csv 데모 포함)
 ```
@@ -630,8 +742,9 @@ stock_backtest/
 ## 7. Short-Term Roadmap
 
 **Note:** Roadmap is high-level only. Detailed task lists belong in `RETROSPECTIVE.md` or Issues.
+Phase-based plan with acceptance criteria is in **Section 8**.
 
-### Day 3 -- Flask Web Dashboard (✅ Completed)
+### Day 3 -- Flask Web Dashboard (✅ Completed — Pre-Phase Planning)
 
 | Task | Status |
 |---|---|
@@ -644,7 +757,7 @@ stock_backtest/
 | RSI + MACD Combined Strategy (`RsiMacdRule`) | ✅ Done |
 | Security hardening (path traversal, memory leak, production config) | ✅ Done |
 
-### Day 3.9 -- Advanced UI Features (✅ Completed)
+### Day 3.9 -- Advanced UI Features (✅ Completed — Pre-Phase Planning)
 
 | Task | Status | Time |
 |---|---|---|
@@ -660,40 +773,199 @@ stock_backtest/
 
 **Day 3.9 Log:** Completed UI polish, cumulative return chart, and portfolio visualization refactor (split Orders + Trade PnL into separate full-width charts with fixed-position legends, removed deprecated combined chart).
 
-**Phase 2 Features (Day 7+):**
-- Candlestick chart with buy/sell overlays (mplfinance)
-- Benchmark overlay on equity curve (Buy & Hold comparison)
-- Intraday timeframes (5m, 1h)
-- Sortable/filterable trade table
-- Additional metrics (CAGR, volatility, win_rate, profit_factor, exposure)
+---
 
-### Day 4 -- Docker
+## 8. Phase Plan — Platform Completion (13 days remaining)
 
-| Task | Detail |
-|---|---|
-| `Dockerfile` | Multi-stage: builder(deps 설치) + runtime(slim 이미지). Port 5000 |
-| `.dockerignore` | `data/`, `logs/`, `__pycache__/`, `.env`, `.git/`, `.claude/` 제외 |
-| `docker-compose.yml` | web(Flask:5000) + db(MySQL:3306). 공유 네트워크, MySQL 볼륨 |
-| `.env.example` | 모든 환경변수 + 안전한 기본값 |
-| 헬스체크 | `GET /health` -> `{"status": "ok"}` |
+> Phases are ordered by dependency. Each phase builds on the previous.
+> Estimated durations are guidelines, not hard boundaries.
 
-### Day 5 -- Kubernetes + MySQL
+---
 
-| Task | Detail |
-|---|---|
-| `k8s/namespace.yaml` | `stock-backtest` 네임스페이스 |
-| `k8s/configmap.yaml` | DB_HOST, DB_PORT, DB_NAME, LOG_LEVEL |
-| `k8s/secret.yaml` | DB_USER, DB_PASSWORD (base64) |
-| `k8s/mysql-statefulset.yaml` | MySQL 8.0, 1 replica, 5Gi PVC, ClusterIP Service |
-| `k8s/web-deployment.yaml` | Flask Deployment (2 replicas), envFrom, Service (NodePort) |
-| DB 스키마 | backtest_results 테이블 (run_id, ticker, rule_id, status, metrics, chart_base64, created_at) |
+### Phase 1: Containerization & Local Parity
 
-### Day 6 -- Web -> K8s Job Integration
+**Goals:**
+- Docker 이미지로 Flask 앱을 패키징하여 로컬 환경 일관성 확보
+- `docker compose up` 한 줄로 Web + MySQL 개발 환경 구동
+- 환경변수 기반 설정으로 Dev/Prod 전환 준비 완료
 
-| Task | Detail |
-|---|---|
-| `k8s/worker-job-template.yaml` | backoffLimit: 1, ttlSecondsAfterFinished: 3600 |
-| Job Launcher | Flask -> K8s Python client -> Job 생성 (run_id, ticker, rule params 환경변수 주입) |
-| Worker 진입점 | `worker.py`: 환경변수 읽기 -> 백테스트 실행 -> MySQL 결과 저장 -> 종료 |
-| 상태 폴링 | `GET /status/<run_id>` -> MySQL 조회 -> completed/failed 반환 |
-| 정리 | K8s TTL controller가 완료된 Job Pod 자동 삭제 |
+**Deliverables:**
+- `Dockerfile` (multi-stage: builder + runtime, port 5000)
+- `docker-compose.yml` (web + db services, shared network, MySQL volume)
+- `.env.example` + `.dockerignore`
+
+**Data Supply Strategy:**
+- `data/` 디렉터리는 Docker 이미지에 포함 (COPY). 런타임에 read-only로 사용.
+- MVP 기준 데이터셋 크기가 작으므로 이미지 내장이 재현성(Reproducibility)과 불변성(Rule 10)을 보장.
+- `.dockerignore`에서 `data/`를 **제외하지 않음** (이미지에 포함되어야 함).
+
+**Acceptance Criteria:**
+- `docker compose up` → `/health` 200 OK, `/run_backtest` 정상 응답
+- `docker compose down && docker compose up` → 데이터 무손실 (MySQL volume 유지)
+
+**Outputs:** `Dockerfile`, `docker-compose.yml`, `.env.example`, `.dockerignore`
+
+---
+
+### Phase 2: Kubernetes Runtime + Data Layer
+
+**Goals:**
+- K8s 클러스터에서 Web Deployment + MySQL StatefulSet 운영
+- ConfigMap/Secret으로 환경변수 주입, Ingress로 외부 접근
+- SQLite → MySQL 전환 완료 (코드 변경 없이 `DATABASE_URL`만 교체)
+
+**Deliverables:**
+- `k8s/` 매니페스트 (namespace, configmap, secret-template, web-deployment, mysql-statefulset, rbac, ingress)
+- `k8s/rbac.yaml`: ServiceAccount + namespace-scoped Role (`create`, `get`, `list`, `delete` on `jobs` in `batch` API group) + RoleBinding
+- `backtest_results` 테이블 스키마 (run_id, ticker, rule_type, rule_id, status, params_json, metrics_json, chart_base64, created_at)
+- Service (ClusterIP for MySQL, NodePort/Ingress for Web)
+
+**Acceptance Criteria:**
+- `kubectl apply -f k8s/` → Web Pod Ready, MySQL Pod Ready
+- Web Pod에서 MySQL 연결 성공, `/health` 200 OK
+
+**Outputs:** `k8s/*.yaml` manifests (8 files), `backtest_results` DDL
+
+---
+
+### Phase 3: Web → K8s Job Orchestration
+
+**Goals:**
+- 백테스트 요청을 K8s Job으로 비동기 실행
+- Worker가 결과를 MySQL에 저장하고, Web이 상태를 폴링
+- Job 생명주기 관리 (TTL, backoff)
+
+**Deliverables:**
+- `worker.py` (Job 진입점: 환경변수 → 백테스트 실행 → MySQL 저장 → 종료)
+- `k8s/worker-job-template.yaml` (backoffLimit: 1, ttlSecondsAfterFinished: 86400)
+- Job launcher in Flask (`JobLauncher` 추상화) + `GET /status/<run_id>` 폴링 API
+- `JobLauncher` 구현: Local 모드 (subprocess mock) + K8s 모드 (`BatchV1Api`), `JOB_LAUNCHER_MODE` 환경변수로 전환
+
+**Job Lifecycle Policy:**
+- **성공한 Job:** Web 애플리케이션이 결과 persist 확인 후 **즉시 명시적으로 삭제** (`BatchV1Api.delete_namespaced_job`). 삭제는 Web과 동일한 namespace 내에서만 수행된다 (RBAC namespace-scoped Role에 의해 강제).
+- **실패한 Job:** 디버깅을 위해 **24시간 보존**. TTLAfterFinished controller가 `ttlSecondsAfterFinished: 86400` 이후 자동 정리.
+- `ttlSecondsAfterFinished: 86400`은 실패한 Job의 fallback cleanup 역할. 성공한 Job은 TTL 만료 전에 Web이 선제 삭제.
+
+**Acceptance Criteria:**
+- Web에서 백테스트 요청 → K8s Job 생성 → MySQL에 결과 저장 → `/status/<run_id>` completed
+- Job 실패 시 `/status/<run_id>` → `{"status": "failed", "error_message": "..."}`
+
+**Outputs:** `worker.py`, updated `app.py` (job launcher + status endpoint), `k8s/worker-job-template.yaml`
+
+---
+
+### Phase 4: Automation & GitOps
+
+**Goals:**
+- Push 시 자동으로 테스트 → 빌드 → 이미지 push (CI)
+- Git merge 시 Argo CD가 클러스터 상태를 자동 reconcile (CD)
+- Immutable image tags (Git SHA)로 배포 추적 (Rule 10)
+
+**Deliverables:**
+- `.github/workflows/ci.yml` (pytest → docker build → push to GHCR with `:<git-sha-short>` tag)
+- Argo CD Application manifest (`k8s/argocd-app.yaml` 또는 Argo CD UI 설정)
+- Image tag 업데이트 → Argo CD 자동 sync 파이프라인
+
+**Acceptance Criteria:**
+- `git push` → GitHub Actions green → 새 이미지 push → Argo CD sync → Pod 롤링 업데이트
+- 이전 태그로 롤백 가능 확인 (Section 11 Rollback Procedure 참고)
+
+**Outputs:** `.github/workflows/ci.yml`, Argo CD app config, documented rollback procedure
+
+---
+
+### Phase 5: Observability Verification & Demo Assets
+
+> Observability requirements are defined in **Rule 8**. This phase verifies
+> end-to-end compliance and produces demo assets. It does NOT redefine the rules.
+
+This phase focuses on verification of Rule 8 compliance (stdout/stderr logging and run_id tracing), not on introducing new observability features.
+
+**MUST (deadline required):**
+- `run_id` 기반 요청 추적이 Web → Job → MySQL 전 구간에서 동작 확인
+- 모든 컴포넌트가 stdout/stderr structured logging을 사용 (Rule 8 compliance)
+- `scripts/demo.sh` — 고정 시나리오 E2E 데모 (백테스트 제출 → 상태 폴링 → 결과 확인)
+
+**NICE-TO-HAVE (optional, not required for deadline):**
+- Prometheus ServiceMonitor + Grafana dashboard JSON
+- `/metrics` endpoint (request count, latency histogram)
+
+**Acceptance Criteria:**
+- `scripts/demo.sh` 실행 → 전체 파이프라인 성공, 결과 MySQL 확인 가능
+- `kubectl logs` 에서 `run_id`로 Web → Job 전 구간 요청 추적 가능
+
+**Outputs:** `scripts/demo.sh`, logging verification report (in RETROSPECTIVE.md)
+
+---
+
+### Phase 6: Documentation & Retrospective
+
+**Goals:**
+- 아키텍처 다이어그램과 운영 가이드로 포트폴리오 완성도 확보
+- RETROSPECTIVE.md에 Phase 1-5 설계 결정 추가
+- README.md를 최종 상태로 업데이트
+
+**Deliverables:**
+- `docs/architecture.md` (Mermaid 다이어그램: 전체 흐름, K8s 토폴로지, CI/CD 파이프라인)
+- `docs/ops-guide.md` (배포, 롤백, 트러블슈팅 가이드)
+- RETROSPECTIVE.md 업데이트 (Phase 1-5 Q&A 추가)
+
+**Acceptance Criteria:**
+- `docs/` 디렉터리에 2개 이상 문서 존재
+- RETROSPECTIVE.md에 인프라 관련 Q&A 3개 이상 추가
+
+**Outputs:** `docs/architecture.md`, `docs/ops-guide.md`, updated RETROSPECTIVE.md + README.md
+
+---
+
+## 9. Acceptance Criteria (Project-wide)
+
+프로젝트 전체 완성도를 판단하는 최종 체크리스트:
+
+- [ ] `docker compose up` → Web + MySQL 정상 구동, `/health` 200 OK
+- [ ] `kubectl apply -f k8s/` → Web Deployment + MySQL StatefulSet Ready
+- [ ] Web에서 백테스트 요청 → K8s Job 생성 → MySQL에 결과 저장
+- [ ] 결과가 MySQL에 persist (`backtest_results` 테이블)
+- [ ] CI/CD 파이프라인 동작: push → test → build → deploy (Argo CD sync)
+
+---
+
+## 10. Out of Scope (for this deadline)
+
+아래 항목은 현재 16일 마감 내 **구현 대상이 아님**:
+
+- **게시판/IoT/AI 연동** — Phase 7+ ideas. 플랫폼 완성 후 확장 가능성으로만 언급.
+- **Candlestick chart + Intraday timeframes** — UI enhancement (Phase 2+ feature). 선택적 구현. 핵심 플랫폼 완성이 우선.
+- **Benchmark overlay (Buy & Hold)** — 선택적 UI feature.
+- **Sortable/filterable trade table** — 클라이언트 측 enhancement, 우선순위 낮음.
+- **Additional metrics (CAGR, volatility, win_rate, profit_factor, exposure)** — Adapter layer에서 계산 가능하나, 핵심 인프라 완성이 우선.
+- **Prometheus/Grafana 대시보드** — Phase 5 NICE-TO-HAVE. 마감 필수 요건 아님.
+
+**원칙:** 플랫폼 완성도(Docker → K8s → Job → CI/CD → Observability) > 새로운 UI 기능.
+
+---
+
+## 11. Operations: SLO, Rollback, Incident Triage
+
+### SLOs (Service Level Objectives)
+
+- **Availability:** `/health` endpoint returns 200 OK ≥ 99% of the time (measured per hour)
+- **Backtest Completion:** ≥ 95% of submitted K8s Jobs reach `completed` status within 5 minutes
+
+### Rollback Procedure (3 steps)
+
+1. **Revert image tag:** Argo CD sync to previous known-good tag
+   (`argocd app sync stock-backtest --revision <prev-commit>`)
+   — 또는 `k8s/web-deployment.yaml`의 image tag를 이전 SHA로 되돌리고 commit → Argo CD auto-sync
+2. **Verify health:** `curl http://<ingress>/health` → 200 OK on all Web Pods
+3. **Validate functionality:** submit test backtest → `/status/<run_id>` returns `completed` with valid metrics
+
+### Incident Triage Checklist
+
+| Step | Command / Action | What to check |
+|---|---|---|
+| 1. Ingress/Service | `kubectl get ingress,svc -n stock-backtest` | Endpoints populated? External IP assigned? |
+| 2. Web Pods | `kubectl get pods -l app=web -n stock-backtest` | Running? Restart count normal? OOMKilled? |
+| 3. Job Status | `kubectl get jobs -n stock-backtest` | Failed jobs? `backoffLimit` exceeded? |
+| 4. DB Connectivity | `kubectl exec <web-pod> -- python -c "from extensions import db; ..."` (환경변수 기반 테스트 커맨드 예시; 실제 값은 환경별로 상이) | MySQL connection OK? Timeout? |
+| 5. Logs by run_id | `kubectl logs -l app=web \| grep <run_id>` + `kubectl logs job/<run_id>` | Trace full request path: Web → Job → DB |
