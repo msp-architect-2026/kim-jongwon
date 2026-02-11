@@ -1,5 +1,8 @@
 # Technical Retrospective & Architecture Overview
 
+> **Note:** This document captures the engineering context and retrospective up to Day 3.9, based on observable implementation decisions.
+> For finalized architectural invariants, operational rules, and contracts (Day 4+), refer to **`CLAUDE.md`**, which serves as the Single Source of Truth.
+
 > Day 1 ~ Day 3.9 구현 기반. 실제 코드베이스에서 확인 가능한 설계 결정만 기술.
 
 ---
@@ -210,6 +213,11 @@
 - Production에서는 schema migration을 **Alembic 같은 전용 도구**로 관리해야 함
 - `__main__` guard는 "로컬 개발에서만 자동 생성, production에서는 명시적 마이그레이션" 원칙
 
+**Production Note (Day 4+):**
+위의 `db.create_all()` 편의 기능은 **로컬 개발 환경에서만** 적용된다.
+Production(K8s) 환경에서의 스키마 초기화는 `CLAUDE.md` Rule 9에 정의된 대로 **운영자가 명시적으로 실행하는 일회성 절차**(`kubectl exec` 또는 초기화 전용 K8s Job)로 취급된다.
+자동 `db.create_all()` 호출은 Production 환경에서 **절대 발생하지 않는다**.
+
 ---
 
 ### 2.5 Security Considerations
@@ -228,6 +236,36 @@
 **대안: Rollback 없이 session을 재생성하는 방식**
 - Flask-SQLAlchemy는 기본적으로 request 종료 시 session을 정리하지만, **exception 도중 다른 DB 작업이 실행될 수 있음**
 - Explicit rollback이 더 방어적이고 의도가 명확
+
+---
+
+### 2.6 Kubernetes & Operational Invariants (Post-Day 3.9)
+
+> 이 섹션은 Day 4 이후 `CLAUDE.md`에 확정된 운영 규칙들의 **엔지니어링 근거(Why)**를 설명한다.
+> 규칙 자체의 정의와 세부 사항은 `CLAUDE.md`가 Single Source of Truth이다.
+
+**Namespace-Scoped RBAC (Role/RoleBinding, not ClusterRole):**
+`CLAUDE.md` Section 3에 정의된 대로, Web Pod의 ServiceAccount는 namespace-scoped Role만 사용한다.
+근거는 **최소 권한 원칙(Principle of Least Privilege)**과 **폭발 반경(blast radius) 억제**이다.
+ClusterRole은 전체 클러스터의 모든 namespace에 영향을 미치므로, 단일 ServiceAccount 침해 시 다른 팀의 워크로드까지 위협한다.
+Namespace-scoped Role은 권한을 `stock-backtest` namespace 내 `batch/v1` Jobs로만 한정하여, 멀티테넌트 클러스터에서의 격리를 보장한다.
+
+**Ephemeral Worker Model (K8s Jobs):**
+`CLAUDE.md` Phase 3에 정의된 대로, 각 백테스트는 독립된 K8s Job으로 실행된다.
+백테스트는 CPU-bound 연산이므로 Job 단위 격리가 자연스럽다 — 하나의 장기 실행 요청이 다른 요청을 차단하지 않으며, `backoffLimit`로 재시도 의미론이 선언적으로 관리된다.
+실패한 Job은 `ttlSecondsAfterFinished: 86400`으로 24시간 보존하여 로그 검사를 허용하고, 성공한 Job은 즉시 삭제하여 클러스터 리소스를 회수한다.
+
+**Web ↔ Worker Decoupling via MySQL:**
+`CLAUDE.md` Section 3 Invariants에 명시된 대로, MySQL이 결과의 유일한 source of truth이다.
+근거는 **Pod 생명주기 독립성**이다 — Web Pod가 재시작되거나 Worker Job이 완료 후 삭제되어도 결과는 MySQL에 영구 보존된다.
+In-memory 커플링(예: Redis pub/sub)이나 RPC 방식은 발신자와 수신자가 동시에 존재해야 하므로, K8s의 비동기적 Pod 스케줄링과 충돌한다.
+DB 기반 교환은 재시도 안전성(idempotent write)과 `run_id` 기반 관찰성(observability)도 자연스럽게 제공한다.
+
+**Reproducibility as a First-Class Property:**
+`CLAUDE.md` Runtime & Data Contracts 섹션에 정의된 4가지 식별자(`data_hash`, `rule_type+params`, `engine_version`, `image_tag`)는 재현성을 수학적으로 검증 가능하게 만든다.
+금융 시스템에서 "정확성(correctness)"만으로는 부족하다 — **설명 가능성(explainability)**과 **재현 가능성(replayability)**이 필수이다.
+동일한 입력이 다른 결과를 생성한다면, 그것이 코드 변경 때문인지, 데이터 변경 때문인지, 환경 변경 때문인지 특정할 수 없다.
+Immutable engine(Rule 1) + immutable image tags(Rule 10) + frozen params의 조합이 이 문제를 구조적으로 제거한다.
 
 ---
 
