@@ -1,7 +1,7 @@
 # Technical Retrospective & Architecture Overview
 
-> **Note:** This document captures the engineering context and retrospective up to Day 3.9, based on observable implementation decisions.
-> For finalized architectural invariants, operational rules, and contracts (Day 4+), refer to **`CLAUDE.md`**, which serves as the Single Source of Truth.
+> **Note:** `RETROSPECTIVE.md` is a **historical record** of engineering decisions made during Day 1–3.9 implementation.
+> For **normative** architectural invariants, operational rules, and contracts (Day 4+), refer to **`CLAUDE.md`**, which serves as the Single Source of Truth.
 
 > Day 1 ~ Day 3.9 구현 기반. 실제 코드베이스에서 확인 가능한 설계 결정만 기술.
 
@@ -215,8 +215,7 @@
 
 **Production Note (Day 4+):**
 위의 `db.create_all()` 편의 기능은 **로컬 개발 환경에서만** 적용된다.
-Production(K8s) 환경에서의 스키마 초기화는 `CLAUDE.md` Rule 9에 정의된 대로 **운영자가 명시적으로 실행하는 일회성 절차**(`kubectl exec` 또는 초기화 전용 K8s Job)로 취급된다.
-자동 `db.create_all()` 호출은 Production 환경에서 **절대 발생하지 않는다**.
+Production(K8s) 환경에서의 스키마 초기화는 `CLAUDE.md` Rule 9에 정의된 대로 **운영자가 명시적으로 실행하는 일회성 절차**(e.g., init Job or `kubectl exec`)로 취급되며, 자동 호출은 발생하지 않는다.
 
 ---
 
@@ -241,8 +240,8 @@ Production(K8s) 환경에서의 스키마 초기화는 `CLAUDE.md` Rule 9에 정
 
 ### 2.6 Kubernetes & Operational Invariants (Post-Day 3.9)
 
-> 이 섹션은 Day 4 이후 `CLAUDE.md`에 확정된 운영 규칙들의 **엔지니어링 근거(Why)**를 설명한다.
-> 규칙 자체의 정의와 세부 사항은 `CLAUDE.md`가 Single Source of Truth이다.
+> All policies referenced below are defined and governed by `CLAUDE.md`.
+> 이 섹션은 해당 규칙들의 **엔지니어링 근거(Why)**만을 설명하며, 규칙 자체의 정의와 세부 사항은 `CLAUDE.md`가 Single Source of Truth이다.
 
 **Namespace-Scoped RBAC (Role/RoleBinding, not ClusterRole):**
 `CLAUDE.md` Section 3에 정의된 대로, Web Pod의 ServiceAccount는 namespace-scoped Role만 사용한다.
@@ -264,6 +263,7 @@ DB 기반 교환은 재시도 안전성(idempotent write)과 `run_id` 기반 관
 **Reproducibility as a First-Class Property:**
 `CLAUDE.md` Runtime & Data Contracts 섹션에 정의된 4가지 식별자(`data_hash`, `rule_type+params`, `engine_version`, `image_tag`)는 재현성을 수학적으로 검증 가능하게 만든다.
 금융 시스템에서 "정확성(correctness)"만으로는 부족하다 — **설명 가능성(explainability)**과 **재현 가능성(replayability)**이 필수이다.
+이는 곧 **감사 가능성(auditability)**의 문제이기도 하다: 백테스트 결과의 신뢰성은 사후 검증(post-hoc verification)이 가능할 때만 성립한다.
 동일한 입력이 다른 결과를 생성한다면, 그것이 코드 변경 때문인지, 데이터 변경 때문인지, 환경 변경 때문인지 특정할 수 없다.
 Immutable engine(Rule 1) + immutable image tags(Rule 10) + frozen params의 조합이 이 문제를 구조적으로 제거한다.
 
