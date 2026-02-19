@@ -58,11 +58,11 @@
 
 ```mermaid
 flowchart LR
-  U[User] --> W[Flask Web (app.py)]
-  W --> E[Immutable Engine]
-  E --> A[Adapter (derived metrics/charts)]
-  A --> W
-  W --> U
+    U[User] --> W["Flask Web (app.py)"]
+    W --> E["Immutable Engine"]
+    E --> A["Adapter (derived metrics/charts)"]
+    A --> W
+    W --> U
 ```
 
 ### Target (Phase 3+: Web → K8s Job 비동기)
@@ -73,14 +73,14 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-  U[User] --> W[Web: Flask Deployment (Stateless)]
-  W -->|INSERT PENDING + create Job| J[K8s Job]
-  J --> P[Worker Pod (Ephemeral)]
-  P --> E[Immutable Engine]
-  E --> A[Adapter Layer]
-  A --> DB[(MySQL: Source of Truth)]
-  W -->|GET /status/<run_id>| DB
-  W --> U
+    U[User] --> W["Web: Flask Deployment (Stateless)"]
+    W -->|"INSERT PENDING + create Job"| J["K8s Job"]
+    J --> P["Worker Pod (Ephemeral)"]
+    P --> E["Immutable Engine"]
+    E --> A["Adapter Layer"]
+    A --> DB[("MySQL: Source of Truth")]
+    W -->|"GET /status/<run_id>"| DB
+    W --> U
 ```
 
 ---
@@ -249,19 +249,3 @@ PENDING ──→ RUNNING ──→ SUCCEEDED
 * 운영 가이드: **[`ops-guide.md`](ops-guide.md)**
 * UI 스크린샷 갤러리: **[`screenshots.md`](screenshots.md)**
 * 프로젝트 소개(요약): **[`../README.md`](../README.md)**
-
----
-
-## 13) 이미지 파일 체크리스트
-
-아래 파일을 준비하면 문서가 완성됩니다.
-
-* `docs/images/architecture_overview.png` (Figure 8)
-* `docs/images/architecture_detail.png` (Figure 9)
-* (README/UI) `docs/images/dashboard_hero.png`
-* (UI) `docs/images/ui_stats_kpi.png`
-* (UI) `docs/images/ui_equity_curve.png`
-* (UI) `docs/images/ui_drawdown_curve.png`
-* (UI) `docs/images/ui_portfolio_analysis.png`
-* (UI) `docs/images/ui_cumulative_return.png`
-* (UI) `docs/images/ui_trades_table.png`
