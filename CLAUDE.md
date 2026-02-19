@@ -133,6 +133,160 @@ CI commit 단계를 제거하지만 Argo CD 확장 의존성이 추가되므로,
 
 ---
 
+## Runtime & Data Contracts (Phase 2+)
+
+> This section defines formal runtime contracts for the Worker execution model.
+> These contracts are enforced starting Phase 3 (Web → K8s Job Orchestration).
+> RFC 2119 keywords (MUST, SHOULD, MUST NOT) indicate requirement levels.
+
+### Run Execution Contract
+
+**State Machine:**
+
+```
+PENDING ──→ RUNNING ──→ SUCCEEDED
+                    └──→ FAILED
+```
+
+| State | Set By | Trigger |
+|---|---|---|
+| `PENDING` | Web | `run_id` issued, Job creation requested |
+| `RUNNING` | Worker | Worker process starts, begins engine execution |
+| `SUCCEEDED` | Worker | Engine completes without error, results persisted to MySQL |
+| `FAILED` | Worker or Web | Unrecoverable error during execution, or Job creation failure |
+
+**Invariants:**
+- State transitions are **forward-only**. A run MUST NOT revert to a previous state.
+- Each transition MUST be persisted to MySQL with a UTC timestamp.
+- The `error_message` field MUST be populated for `FAILED` runs.
+- Web MUST record `PENDING` state in MySQL **before** creating the K8s Job.
+
+**Timestamps:**
+- All timestamps MUST be UTC, stored as ISO 8601 (`YYYY-MM-DDTHH:MM:SS+00:00`).
+- `created_at`: Web issues `run_id` and inserts `PENDING` row.
+- `started_at`: Worker transitions to `RUNNING`.
+- `completed_at`: Worker transitions to `SUCCEEDED` or `FAILED`.
+
+**Failure Classification:**
+
+| Category | Cause | HTTP (if surfaced) | Example |
+|---|---|---|---|
+| `user_error` | Invalid input caught during validation | 400 | Unknown `rule_type`, invalid date range, missing ticker |
+| `system_error` | Unrecoverable runtime failure | 500 | Engine crash, DB timeout, OOM |
+
+- `user_error` runs are set to `FAILED` immediately by Web (no Job created).
+- `system_error` runs are set to `FAILED` by Worker (or by Web if Job creation itself fails).
+
+**Failure Transition Responsibility:**
+
+| Transition | Responsible | Condition |
+|---|---|---|
+| `PENDING → FAILED` | Web | Input validation fails (`user_error`), or K8s Job creation fails (`system_error`) |
+| `RUNNING → FAILED` | Worker | Unrecoverable runtime error during engine execution (`system_error`) |
+
+- Web MAY transition a run directly from `PENDING → FAILED`. This does NOT violate the
+  monotonic state machine; `FAILED` is a terminal state reachable from any non-terminal state.
+- Failure to create a K8s Job (e.g., API error from `BatchV1Api`) is classified as `system_error`.
+  Web MUST set the run to `FAILED` with a descriptive `error_message` and MUST NOT leave it in `PENDING`.
+- Worker MUST transition `RUNNING → FAILED` for any unrecoverable exception during execution.
+  The Worker MUST NOT silently exit without updating the run status.
+
+---
+
+### Reproducibility Guarantees
+
+Given identical values for all four identifiers below, the engine MUST produce identical outputs (equity_curve, trades, metrics).
+
+| Identifier | Source | Purpose |
+|---|---|---|
+| `data_hash` | SHA-256 of input OHLCV CSV content | Ensures identical market data |
+| `rule_type` + `params` | Frozen at request time from API payload | Ensures identical strategy logic and parameters |
+| `engine_version` | Git SHA of the commit (Rule 10 image tag) | Ensures identical engine code (immutable per Rule 1) |
+| `image_tag` | Docker image tag (`:<git-sha-short>`) | Ensures identical runtime environment (dependencies, Python version) |
+
+**Invariants:**
+- All four identifiers MUST be stored in the `backtest_results` row for auditability.
+- `rule_type` + `params` MUST be persisted exactly as received (no post-hoc normalization).
+- The `data_hash` MUST be computed by the Worker **before** engine execution begins and stored with the result.
+  Without identifying the exact input dataset, reproducibility is mathematically unverifiable.
+- Since `engine.py` is immutable (Rule 1), `engine_version` is effectively the image tag.
+- References to `image_tag` as an identity guarantee assume immutable tagging policy.
+  This assumption is governed by Rule 10 (Immutable Image Tags) and is not newly introduced here.
+
+---
+
+### Result Persistence Boundaries
+
+MySQL is the **single source of truth** for all backtest results (Section 3 Invariant).
+This subsection defines what MUST be persisted vs. what MAY be derived on demand.
+
+**MUST persist (canonical data):**
+
+| Column | Type | Description |
+|---|---|---|
+| `run_id` | CHAR(36) | Primary key, UUID4 |
+| `ticker` | VARCHAR(10) | Stock symbol |
+| `rule_type` | VARCHAR(50) | Execution logic identifier |
+| `rule_id` | VARCHAR(100) | Optional helper slug (nullable) |
+| `params_json` | JSON | Strategy parameters (frozen snapshot) |
+| `status` | ENUM | `PENDING`, `RUNNING`, `SUCCEEDED`, `FAILED` |
+| `error_message` | TEXT | NULL for success, populated for failure |
+| `metrics_json` | JSON | Summary KPIs (Rule 2 `metrics` object) |
+| `equity_curve_json` | JSON | Full equity time-series (canonical) |
+| `trades_json` | JSON | Full trade list (canonical) |
+| `created_at` | DATETIME | UTC, set by Web |
+| `started_at` | DATETIME | UTC, set by Worker (nullable) |
+| `completed_at` | DATETIME | UTC, set by Worker (nullable) |
+
+**SHOULD persist (performance optimization):**
+- `chart_base64`: Primary equity curve chart (legacy field, retained for backward compatibility).
+
+**MUST NOT persist (derived on demand):**
+- `drawdown_curve`: Derivable from `equity_curve_json` via Adapter.
+- `portfolio_orders_base64`, `trade_pnl_base64`, `cumulative_return_base64`: Re-renderable from `equity_curve_json` + `trades_json` + price data.
+- `portfolio_curve`: Derivable from `equity_curve_json` + `trades_json`.
+
+**Rationale:** Storing only canonical data (equity_curve, trades) and summary metrics keeps the DB lean.
+All derived visualizations and curves can be deterministically re-computed, consistent with the Adapter pattern (Rule 1).
+
+**Scope:** This contract defines *what* data MUST be persisted, not *how long* or *how much*.
+Storage capacity, retention periods, compression strategies, and data lifecycle policies
+are operational concerns outside the scope of this document.
+This contract MUST NOT be interpreted as requiring unbounded or permanent storage.
+
+---
+
+### Job Lifecycle & Auditability
+
+The audit trail MUST be independent of K8s Job lifecycle.
+
+**Invariant:** Even after a Job object is deleted (by Web on success, or by TTL on failure),
+the complete run record MUST remain in MySQL.
+
+**Timeline:**
+
+```
+1. Web receives request
+   → INSERT INTO backtest_results (run_id, status='PENDING', created_at=NOW())
+2. Web creates K8s Job
+   → Job Pod starts → Worker UPDATEs status='RUNNING', started_at=NOW()
+3a. Success path:
+   → Worker UPDATEs status='SUCCEEDED', metrics, equity_curve, trades, completed_at
+   → Web confirms result in MySQL → Web DELETEs Job object (immediate cleanup)
+3b. Failure path:
+   → Worker UPDATEs status='FAILED', error_message, completed_at
+   → Job retained for 24h (ttlSecondsAfterFinished: 86400) for log inspection
+   → TTL controller deletes Job object after 24h
+4. In both paths: MySQL row persists indefinitely for audit and replay.
+```
+
+**Consistency with existing invariants:**
+- Job deletion policy matches Phase 3 Job Lifecycle Policy (Section 8).
+- RBAC `delete` permission on `jobs.batch` (Section 3 Invariants) enables Web-driven cleanup.
+- All state changes are logged with `run_id` per Rule 8.
+
+---
+
 ## 4. UI Specification (Day 3.9+) — VectorBT-Style Dashboard
 
 This section defines the **data contracts and UI expectations** for the advanced dashboard.
